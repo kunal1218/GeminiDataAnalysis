@@ -203,6 +203,15 @@ def isDatabaseQuestion(userText: str) -> bool:
         "schedule",
         "schedules",
         "stop_times",
+        "station",
+        "stations",
+        "headsign",
+        "wheelchair",
+        "accessibility",
+        "ridership",
+        "busiest",
+        "nearby",
+        "gtfs",
     }
     intent_tokens = {
         "show",
@@ -218,6 +227,13 @@ def isDatabaseQuestion(userText: str) -> bool:
         "accessibility",
         "serving",
         "details",
+        "how",
+        "many",
+        "count",
+        "total",
+        "number",
+        "have",
+        "has",
     }
     token_set = set(re.findall(r"[a-z0-9_]+", text))
     if token_set.intersection(entity_tokens) and token_set.intersection(intent_tokens):
@@ -238,6 +254,15 @@ def isDatabaseQuestion(userText: str) -> bool:
         r"\barrivals?\b.*\bstop\b",
         r"\bdepartures?\b.*\bstop\b",
         r"\bhow many\b.*\bpeople\b.*\bwent to\b",
+        r"\bhow many\b.*\bstops?\b",
+        r"\bhow many\b.*\broutes?\b",
+        r"\bhow many\b.*\btrips?\b",
+        r"\bcount\b.*\bstops?\b",
+        r"\bcount\b.*\broutes?\b",
+        r"\bcount\b.*\btrips?\b",
+        r"\bnumber of\b.*\bstops?\b",
+        r"\bnumber of\b.*\broutes?\b",
+        r"\bnumber of\b.*\btrips?\b",
     )
     return any(re.search(pattern, text) for pattern in patterns)
 
