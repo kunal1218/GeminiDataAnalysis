@@ -522,10 +522,12 @@ def _propose_query_plan_from_headers(user_text: str, max_limit: int) -> dict[str
         if isinstance(decision_payload.get("reason"), str)
         else None
     )
+    if possible is False and _reason_implies_feasible(decision_reason):
+        possible = True
+    if possible is False:
+        reason = decision_reason or "Cannot answer this with the available GTFS columns."
+        return _not_possible_query_plan(max_limit, reason=reason)
     if possible is not True:
-        if possible is False:
-            reason = decision_reason or "Cannot answer this with the available GTFS columns."
-            return _not_possible_query_plan(max_limit, reason=reason)
         return None
 
     sql_prompt = _build_query_sql_prompt(user_text, SOURCE_OF_TRUTH_SCHEMA, max_limit)
@@ -789,6 +791,8 @@ def _build_query_feasibility_prompt(user_text: str, truth_schema: dict[str, Any]
         "1) Be conservative. If unsure, return possible=false.\n"
         "2) Do not generate SQL in this step.\n"
         "3) Only mark possible=true if the answer can be produced from truthSchema data.\n"
+        "4) Keep possible and reason consistent. If reason says the answer can be determined "
+        "from available columns, possible must be true.\n"
         f"userRequest={request_json}\n"
         f"truthSchema={truth_json}"
     )
@@ -1538,8 +1542,8 @@ def _choose_template_key(user_text: str, template_map: dict[str, dict[str, Any]]
         ("arrivals_for_stop", ("arrival", "arrivals", "departure", "departures", "schedule")),
         ("routes_serving_stop", ("routes serving", "serve stop", "which routes stop")),
         ("stops_on_route", ("stops on route", "stops for route", "route stops")),
-        ("busiest_stops", ("busiest stops", "top stops", "most used stops")),
-        ("busiest_routes", ("busiest routes", "top routes", "most used routes")),
+        ("busiest_stops", ("busiest stop", "busiest stops", "top stop", "top stops", "most used stop", "most used stops")),
+        ("busiest_routes", ("busiest route", "busiest routes", "top route", "top routes", "most used route", "most used routes")),
         ("accessible_stops", ("accessible stops", "wheelchair stops")),
         ("accessible_trips", ("accessible trips", "wheelchair trips")),
         ("route_details", ("route details", "details for route", "route info")),
@@ -1553,6 +1557,12 @@ def _choose_template_key(user_text: str, template_map: dict[str, dict[str, Any]]
             continue
         if any(signal in text_lower for signal in signals):
             return key
+
+    if "busiest" in text_lower:
+        if "stop" in text_lower and "busiest_stops" in template_map:
+            return "busiest_stops"
+        if "route" in text_lower and "busiest_routes" in template_map:
+            return "busiest_routes"
 
     # Avoid routing specific intents to generic list templates when specialized
     # templates are unavailable (e.g., fallback schema); ask clarifying instead.
@@ -1776,6 +1786,42 @@ def _read_float_env(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def _reason_implies_feasible(reason: str | None) -> bool:
+    if not reason:
+        return False
+    text_lower = reason.strip().lower()
+    if not text_lower:
+        return False
+
+    negative_markers = (
+        "not possible",
+        "cannot",
+        "can't",
+        "unable",
+        "insufficient",
+        "not in data",
+        "not in the data",
+        "missing",
+        "do not have",
+        "does not have",
+    )
+    if any(marker in text_lower for marker in negative_markers):
+        return False
+
+    positive_markers = (
+        "can be determined",
+        "can be answered",
+        "can answer",
+        "can be computed",
+        "can be calculated",
+        "can be found",
+        "can determine",
+        "can compute",
+        "can calculate",
+    )
+    return any(marker in text_lower for marker in positive_markers)
 
 
 __all__ = [

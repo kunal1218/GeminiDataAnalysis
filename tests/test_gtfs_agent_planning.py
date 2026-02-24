@@ -96,6 +96,46 @@ class QueryPlanningTests(unittest.TestCase):
         self.assertEqual(plan["params"][0], 10)
         self.assertEqual(mocked_call.call_count, 1)
 
+    def test_busiest_stop_singular_still_maps_to_busiest_stops(self):
+        feasibility_payload = '{"possible": false, "reason": "could not map intent"}'
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test"}, clear=False):
+            with patch(
+                "app.gtfs_agent._call_gemini_json",
+                side_effect=[feasibility_payload],
+            ) as mocked_call:
+                plan = proposeQueryPlan("what is the busiest stop", self.schema)
+
+        self.assertEqual(plan["template_key"], "busiest_stops")
+        self.assertIsNone(plan["clarifying_question"])
+        self.assertEqual(plan["params"][0], 10)
+        self.assertEqual(mocked_call.call_count, 1)
+
+    def test_gemini_contradictory_feasibility_continues_to_sql_generation(self):
+        feasibility_payload = (
+            '{"possible": false, "reason": "The request can be determined by counting '
+            'how often each stop appears in stop_times."}'
+        )
+        sql_payload = (
+            '{"sql": "SELECT stops.stop_id, stops.stop_name, COUNT(*)::bigint AS scheduled_stop_events '
+            'FROM stop_times INNER JOIN stops ON stops.stop_id = stop_times.stop_id '
+            'GROUP BY stops.stop_id, stops.stop_name '
+            'ORDER BY scheduled_stop_events DESC '
+            'LIMIT LEAST($1, 50)", '
+            '"params": [10], "row_limit": 10, "reason": "counted stop_times by stop"}'
+        )
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test"}, clear=False):
+            with patch(
+                "app.gtfs_agent._call_gemini_json",
+                side_effect=[feasibility_payload, sql_payload],
+            ) as mocked_call:
+                plan = proposeQueryPlan("top 10 busiest stops", self.schema)
+
+        self.assertEqual(plan["template_key"], "gemini_generated")
+        self.assertIsNone(plan["clarifying_question"])
+        self.assertIn("from stop_times", plan["sql"].lower())
+        self.assertEqual(plan["params"][0], 10)
+        self.assertEqual(mocked_call.call_count, 2)
+
     def test_gemini_planner_invalid_sql_returns_not_possible(self):
         feasibility_payload = '{"possible": true, "reason": "can answer"}'
         sql_payload = (
