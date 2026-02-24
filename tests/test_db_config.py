@@ -41,6 +41,22 @@ class DatabaseConfigTests(unittest.TestCase):
         self.assertIn("DATABASE_PUBLIC_URL", message)
         self.assertIn("Railway", message)
 
+    def test_rejects_malformed_public_url_with_missing_host(self):
+        with patch.dict(
+            os.environ,
+            {
+                "DATABASE_PUBLIC_URL": "postgresql://postgres:pw@:5432/railway",
+                "PGHOST": "postgres.railway.internal",
+            },
+            clear=True,
+        ):
+            with self.assertRaises(RuntimeError) as context:
+                _select_database_url()
+
+        message = str(context.exception)
+        self.assertIn("missing a hostname", message)
+        self.assertIn("DATABASE_PUBLIC_URL", message)
+
     def test_pghost_does_not_override_priority(self):
         with patch.dict(
             os.environ,

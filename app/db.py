@@ -63,6 +63,25 @@ def _extract_candidate_hostname(env_key: str, raw_value: str) -> str | None:
     return _extract_db_host(raw_value) or None
 
 
+def _validate_selected_url(selected_key: str, selected_url: str) -> tuple[str, int | None]:
+    parsed = urlparse(selected_url)
+    scheme = (parsed.scheme or "").strip().lower()
+    if scheme not in {"postgresql", "postgres", "postgresql+psycopg2"}:
+        raise RuntimeError(
+            f"{selected_key} is not a valid Postgres URL. "
+            "Set DATABASE_PUBLIC_URL to Railway's Public connection URL."
+        )
+
+    selected_host = (parsed.hostname or "").strip().lower()
+    if not selected_host:
+        raise RuntimeError(
+            f"{selected_key} is missing a hostname. "
+            "Set DATABASE_PUBLIC_URL to Railway's Public connection URL."
+        )
+
+    return selected_host, parsed.port
+
+
 def _select_database_url() -> tuple[str, str]:
     public_url = _read_env("DATABASE_PUBLIC_URL")
     database_url = _read_env("DATABASE_URL")
@@ -84,7 +103,7 @@ def _select_database_url() -> tuple[str, str]:
         accepted = ", ".join(_DB_URL_ENV_KEYS)
         raise RuntimeError(f"A database URL is required. Set one of: {accepted}.")
 
-    selected_host = _extract_db_host(selected_url)
+    selected_host, _ = _validate_selected_url(selected_key, selected_url)
     if _is_railway_internal_host(selected_host) and not public_url:
         raise RuntimeError(
             "Selected database host is Railway internal "
@@ -116,10 +135,11 @@ def validate_database_config() -> None:
         hostname = _extract_candidate_hostname(env_key, raw_value)
         if hostname:
             LOGGER.info("Database candidate host: %s=%s", env_key, hostname)
+        elif raw_value:
+            LOGGER.info("Database candidate host: %s=<unparseable>", env_key)
 
     selected_key, selected_url = _select_database_url()
-    selected_host = _extract_db_host(selected_url) or "unknown"
-    selected_port = _extract_db_port(selected_url)
+    selected_host, selected_port = _validate_selected_url(selected_key, selected_url)
     port_label = str(selected_port) if selected_port is not None else "unknown"
     LOGGER.info(
         "Database URL selected from %s host=%s port=%s",
@@ -142,4 +162,3 @@ def get_engine() -> Engine:
 
 def get_session_factory() -> sessionmaker:
     return sessionmaker(bind=get_engine(), autoflush=False, autocommit=False, future=True)
-
