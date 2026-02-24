@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from app.db import validate_database_config
 from app.gtfs_agent import (
     AgentSchemaError,
     QueryPlanError,
@@ -51,6 +52,7 @@ class ChatResponse(BaseModel):
 
 @app.on_event("startup")
 def warm_agent_schema() -> None:
+    validate_database_config()
     try:
         getAgentSchema()
     except AgentSchemaError:
@@ -139,10 +141,13 @@ def _friendly_db_error(raw_error: str) -> str:
             "(not an internal-only host)."
         )
     if "password authentication failed" in lower:
-        return "Database authentication failed. Verify DATABASE_URL username/password."
+        return (
+            "Database authentication failed. Verify DATABASE_PUBLIC_URL (preferred) "
+            "or DATABASE_URL username/password."
+        )
     if "timeout" in lower:
         return "Database connection timed out. Check network access and DB availability."
-    return "Check DATABASE_URL / DATABASE_SSL settings and retry."
+    return "Check DATABASE_PUBLIC_URL / DATABASE_URL / DATABASE_SSL settings and retry."
 
 
 @app.get("/")
