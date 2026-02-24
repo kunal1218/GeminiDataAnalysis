@@ -382,8 +382,11 @@ def proposeQueryPlan(userText: str, agentSchema: dict[str, Any]) -> dict[str, An
 
     max_limit = _read_int_env("MAX_RESULT_ROWS", 50)
     gemini_plan = _propose_query_plan_from_headers(userText, max_limit)
-    if gemini_plan is not None:
+    gemini_not_possible_plan: dict[str, Any] | None = None
+    if gemini_plan is not None and gemini_plan.get("template_key") != "gemini_not_possible":
         return gemini_plan
+    if gemini_plan is not None and gemini_plan.get("template_key") == "gemini_not_possible":
+        gemini_not_possible_plan = gemini_plan
 
     template_map = {
         template.get("key"): template
@@ -392,6 +395,8 @@ def proposeQueryPlan(userText: str, agentSchema: dict[str, Any]) -> dict[str, An
     }
     template_key = _choose_template_key(userText, template_map)
     if not template_key:
+        if gemini_not_possible_plan is not None:
+            return gemini_not_possible_plan
         return {
             "clarifying_question": (
                 "What GTFS query do you want? For example: list routes, stop details, "
@@ -478,14 +483,15 @@ def _propose_query_plan_from_headers(user_text: str, max_limit: int) -> dict[str
 
     possible = payload.get("possible")
     if possible is not True:
-        return _not_possible_query_plan(max_limit)
+        reason = payload.get("reason") if isinstance(payload.get("reason"), str) else None
+        return _not_possible_query_plan(max_limit, reason=reason)
 
     sql = payload.get("sql")
     params = payload.get("params", [])
     if not isinstance(sql, str) or not sql.strip():
-        return _not_possible_query_plan(max_limit)
+        return _not_possible_query_plan(max_limit, reason="Gemini returned empty SQL.")
     if not isinstance(params, list):
-        return _not_possible_query_plan(max_limit)
+        return _not_possible_query_plan(max_limit, reason="Gemini returned invalid params.")
 
     normalized_params: list[Any] = []
     for param in params:
@@ -507,9 +513,12 @@ def _propose_query_plan_from_headers(user_text: str, max_limit: int) -> dict[str
     )
     placeholders = [int(value) for value in re.findall(r"\$(\d+)", sql)]
     if placeholders and max(placeholders) > len(normalized_params):
-        return _not_possible_query_plan(max_limit)
+        return _not_possible_query_plan(max_limit, reason="SQL placeholders exceed params.")
     if validation_errors:
-        return _not_possible_query_plan(max_limit)
+        return _not_possible_query_plan(
+            max_limit,
+            reason="; ".join(validation_errors[:2]),
+        )
 
     return {
         "template_key": "gemini_generated",
@@ -526,7 +535,7 @@ def _propose_query_plan_from_headers(user_text: str, max_limit: int) -> dict[str
     }
 
 
-def _not_possible_query_plan(max_limit: int) -> dict[str, Any]:
+def _not_possible_query_plan(max_limit: int, reason: str | None = None) -> dict[str, Any]:
     return {
         "template_key": "gemini_not_possible",
         "sql": None,
@@ -534,6 +543,7 @@ def _not_possible_query_plan(max_limit: int) -> dict[str, Any]:
         "param_map": {},
         "display_key": None,
         "clarifying_question": "not possible",
+        "not_possible_reason": reason,
         "safety": {
             "row_limit": 0,
             "max_limit": max_limit,
@@ -1229,6 +1239,42 @@ def _minimal_fallback_agent_schema() -> dict[str, Any]:
                 "safety_notes": "Bounding box for nearby search; bounded rows.",
             },
             {
+                "key": "busiest_stops",
+                "description": "Top stops by scheduled stop events.",
+                "required_inputs": [],
+                "sql_template": (
+                    "SELECT stops.stop_id, stops.stop_name, COUNT(*)::bigint AS scheduled_stop_events "
+                    "FROM stop_times "
+                    "INNER JOIN stops ON stops.stop_id = stop_times.stop_id "
+                    "GROUP BY stops.stop_id, stops.stop_name "
+                    "ORDER BY scheduled_stop_events DESC, stops.stop_name "
+                    f"LIMIT LEAST($1, {max_limit})"
+                ),
+                "params": ["limit"],
+                "default_limit": min(10, max_limit),
+                "display_key": "busiest_stops_table",
+                "safety_notes": "Aggregated and row-limited.",
+            },
+            {
+                "key": "busiest_routes",
+                "description": "Top routes by scheduled stop events.",
+                "required_inputs": [],
+                "sql_template": (
+                    "SELECT routes.route_id, routes.route_short_name, routes.route_long_name, "
+                    "COUNT(*)::bigint AS scheduled_stop_events "
+                    "FROM stop_times "
+                    "INNER JOIN trips ON trips.trip_id = stop_times.trip_id "
+                    "INNER JOIN routes ON routes.route_id = trips.route_id "
+                    "GROUP BY routes.route_id, routes.route_short_name, routes.route_long_name "
+                    "ORDER BY scheduled_stop_events DESC, routes.route_short_name "
+                    f"LIMIT LEAST($1, {max_limit})"
+                ),
+                "params": ["limit"],
+                "default_limit": min(10, max_limit),
+                "display_key": "busiest_routes_table",
+                "safety_notes": "Aggregated and row-limited.",
+            },
+            {
                 "key": "stop_service_volume",
                 "description": (
                     "Estimate service volume for a stop by counting scheduled stop events, "
@@ -1310,6 +1356,29 @@ def _minimal_fallback_agent_schema() -> dict[str, Any]:
                     "latlon_fields": ["stop_lat", "stop_lon"],
                     "color_fields": [],
                 },
+            },
+            {
+                "key": "busiest_stops_table",
+                "title_template": "Top busiest stops ({row_count})",
+                "columns": [
+                    {"name": "stop_id", "label": "Stop ID"},
+                    {"name": "stop_name", "label": "Stop Name"},
+                    {"name": "scheduled_stop_events", "label": "Scheduled Stop Events"},
+                ],
+                "row_id_field": "stop_id",
+                "formatting": {"time_fields": [], "latlon_fields": [], "color_fields": []},
+            },
+            {
+                "key": "busiest_routes_table",
+                "title_template": "Top busiest routes ({row_count})",
+                "columns": [
+                    {"name": "route_id", "label": "Route ID"},
+                    {"name": "route_short_name", "label": "Short Name"},
+                    {"name": "route_long_name", "label": "Long Name"},
+                    {"name": "scheduled_stop_events", "label": "Scheduled Stop Events"},
+                ],
+                "row_id_field": "route_id",
+                "formatting": {"time_fields": [], "latlon_fields": [], "color_fields": []},
             },
             {
                 "key": "stop_volume_summary",

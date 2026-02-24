@@ -83,6 +83,12 @@ function appendMessage(role, text, payload = null) {
       meta.appendChild(error);
     }
 
+    if (payload.query_plan && payload.query_plan.not_possible_reason) {
+      const reason = document.createElement("div");
+      reason.textContent = `Reason: ${payload.query_plan.not_possible_reason}`;
+      meta.appendChild(reason);
+    }
+
     if (meta.childElementCount > 0) {
       bubble.appendChild(meta);
     }

@@ -69,6 +69,20 @@ class QueryPlanningTests(unittest.TestCase):
 
         self.assertEqual(plan["clarifying_question"], "not possible")
         self.assertIsNone(plan["sql"])
+        self.assertEqual(plan["not_possible_reason"], "not in data")
+
+    def test_gemini_not_possible_still_uses_known_template(self):
+        gemini_payload = (
+            '{"possible": false, "sql": null, "params": [], '
+            '"row_limit": null, "reason": "could not map intent"}'
+        )
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test"}, clear=False):
+            with patch("app.gtfs_agent._call_gemini_json", return_value=gemini_payload):
+                plan = proposeQueryPlan("top 10 busiest stops", self.schema)
+
+        self.assertEqual(plan["template_key"], "busiest_stops")
+        self.assertIsNone(plan["clarifying_question"])
+        self.assertEqual(plan["params"][0], 10)
 
     def test_gemini_planner_invalid_sql_returns_not_possible(self):
         gemini_payload = (
