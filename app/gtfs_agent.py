@@ -606,7 +606,8 @@ def _call_gemini_json(prompt: str) -> str:
         raise AgentSchemaError("GEMINI_API_KEY is required for agent schema generation.")
 
     model = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
-    timeout_seconds = _read_float_env("GEMINI_TIMEOUT_SECONDS", 20.0)
+    timeout_seconds = _read_float_env("GEMINI_TIMEOUT_SECONDS", 30.0)
+    retry_count = max(0, _read_int_env("GEMINI_RETRY_COUNT", 1))
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
     payload = {
@@ -620,23 +621,43 @@ def _call_gemini_json(prompt: str) -> str:
         method="POST",
     )
 
-    try:
-        with urlrequest.urlopen(request, timeout=timeout_seconds) as response:
-            raw = response.read().decode("utf-8")
-    except urlerror.HTTPError as exc:
-        detail = _extract_http_error_detail(exc)
-        suffix = f": {detail}" if detail else ""
-        raise AgentSchemaError(
-            f"Gemini request failed for model '{model}' with HTTP {exc.code}{suffix}."
-        ) from exc
-    except urlerror.URLError as exc:
-        reason = str(getattr(exc, "reason", "")).strip()
-        suffix = f": {reason}" if reason else ""
-        raise AgentSchemaError(
-            f"Gemini request failed for model '{model}' due to network error{suffix}."
-        ) from exc
-    except TimeoutError as exc:
-        raise AgentSchemaError(f"Gemini request timed out for model '{model}'.") from exc
+    attempts = retry_count + 1
+    raw: str | None = None
+    last_error_message = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            with urlrequest.urlopen(request, timeout=timeout_seconds) as response:
+                raw = response.read().decode("utf-8")
+            break
+        except urlerror.HTTPError as exc:
+            detail = _extract_http_error_detail(exc)
+            suffix = f": {detail}" if detail else ""
+            last_error_message = (
+                f"Gemini request failed for model '{model}' with HTTP {exc.code}{suffix}."
+            )
+            if attempt < attempts and exc.code in {408, 429, 500, 502, 503, 504}:
+                time.sleep(0.5 * attempt)
+                continue
+            raise AgentSchemaError(last_error_message) from exc
+        except urlerror.URLError as exc:
+            reason = str(getattr(exc, "reason", "")).strip()
+            suffix = f": {reason}" if reason else ""
+            last_error_message = (
+                f"Gemini request failed for model '{model}' due to network error{suffix}."
+            )
+            if attempt < attempts:
+                time.sleep(0.5 * attempt)
+                continue
+            raise AgentSchemaError(last_error_message) from exc
+        except TimeoutError as exc:
+            last_error_message = f"Gemini request timed out for model '{model}'."
+            if attempt < attempts:
+                time.sleep(0.5 * attempt)
+                continue
+            raise AgentSchemaError(last_error_message) from exc
+
+    if raw is None:
+        raise AgentSchemaError(last_error_message or "Gemini request failed unexpectedly.")
 
     try:
         payload_json = json.loads(raw)

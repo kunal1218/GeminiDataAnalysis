@@ -38,7 +38,8 @@ Safety checks:
 Optional env vars:
 - `DATABASE_SSL` (default handled by code)
 - `GEMINI_MODEL` (defaults to `gemini-2.0-flash`)
-- `GEMINI_TIMEOUT_SECONDS` (default `20`)
+- `GEMINI_TIMEOUT_SECONDS` (default `30`)
+- `GEMINI_RETRY_COUNT` (default `1`, total attempts = retry + 1)
 - `MAX_RESULT_ROWS` (default `50`)
 - `SCHEMA_CACHE_SECONDS` (default `300`)
 
