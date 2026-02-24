@@ -26,6 +26,9 @@ Database URL selection:
 2. Otherwise (local/Vercel/etc.), app prefers `DATABASE_PUBLIC_URL`.
 3. If `DATABASE_PUBLIC_URL` is missing, app falls back to `DATABASE_URL`.
 
+Vercel note:
+- `VERCEL=1` is treated as external runtime even if Railway marker env vars are present, so `DATABASE_PUBLIC_URL` is selected.
+
 Safety checks:
 - Outside Railway runtime, internal hosts (`*.railway.internal`) are rejected with a clear startup error.
 - Startup runs `SELECT 1` and fails fast when DB config is invalid.

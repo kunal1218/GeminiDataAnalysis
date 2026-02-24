@@ -22,8 +22,17 @@ def _is_truthy(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on", "require"}
 
 
+def _runtime_name() -> str:
+    # Vercel is always an external runtime for Railway DB networking.
+    if _is_truthy(_read_env("VERCEL")):
+        return "vercel"
+    if any(_read_env(name) for name in _RAILWAY_MARKER_ENV_KEYS):
+        return "railway"
+    return "external"
+
+
 def _is_running_on_railway() -> bool:
-    return any(_read_env(name) for name in _RAILWAY_MARKER_ENV_KEYS)
+    return _runtime_name() == "railway"
 
 
 def _extract_db_host(database_url: str) -> str:
@@ -128,7 +137,7 @@ def validate_database_config() -> None:
     LOGGER.info(
         "DB config selected source=%s runtime=%s host=%s port=%s",
         selected_key,
-        "railway" if _is_running_on_railway() else "external",
+        _runtime_name(),
         _redact_host(host),
         port_label,
     )

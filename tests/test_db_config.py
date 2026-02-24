@@ -43,6 +43,26 @@ class DatabaseConfigTests(unittest.TestCase):
         self.assertEqual(selected_key, "DATABASE_URL")
         self.assertIn("postgres.railway.internal", selected_url)
 
+    def test_vercel_takes_public_url_even_with_railway_markers(self):
+        with patch.dict(
+            os.environ,
+            {
+                "VERCEL": "1",
+                "RAILWAY_PROJECT_ID": "proj_123",
+                "DATABASE_PUBLIC_URL": (
+                    "postgresql://postgres:public_pw@metro.proxy.rlwy.net:13993/railway"
+                ),
+                "DATABASE_URL": (
+                    "postgresql://postgres:internal_pw@postgres.railway.internal:5432/railway"
+                ),
+            },
+            clear=True,
+        ):
+            selected_key, selected_url = _select_database_url()
+
+        self.assertEqual(selected_key, "DATABASE_PUBLIC_URL")
+        self.assertIn("metro.proxy.rlwy.net", selected_url)
+
     def test_rejects_internal_host_when_not_on_railway_and_public_missing(self):
         with patch.dict(
             os.environ,
