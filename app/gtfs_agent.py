@@ -133,6 +133,8 @@ _AGENT_SCHEMA_SOURCE = "unknown"
 _AGENT_SCHEMA_LAST_ERROR: str | None = None
 _AGENT_SCHEMA_LAST_GEMINI_ATTEMPT_AT = 0.0
 _AGENT_SCHEMA_LAST_GEMINI_SUCCESS_AT = 0.0
+_AGENT_SCHEMA_LAST_KNOWN_GOOD: dict[str, Any] | None = None
+_AGENT_SCHEMA_LAST_KNOWN_GOOD_CREATED_AT = 0.0
 
 
 class AgentSchemaError(RuntimeError):
@@ -298,14 +300,37 @@ def getAgentSchemaStatus() -> dict[str, Any]:
             "cache_age_seconds": max(0.0, time.time() - _AGENT_SCHEMA_CACHE_CREATED_AT)
             if _AGENT_SCHEMA_CACHE_CREATED_AT
             else None,
+            "last_known_good_age_seconds": max(
+                0.0,
+                time.time() - _AGENT_SCHEMA_LAST_KNOWN_GOOD_CREATED_AT,
+            )
+            if _AGENT_SCHEMA_LAST_KNOWN_GOOD_CREATED_AT
+            else None,
         }
 
 
 def clearAgentSchemaCache() -> None:
     global _AGENT_SCHEMA_CACHE, _AGENT_SCHEMA_CACHE_CREATED_AT
+    global _AGENT_SCHEMA_LAST_KNOWN_GOOD, _AGENT_SCHEMA_LAST_KNOWN_GOOD_CREATED_AT
     with _AGENT_SCHEMA_LOCK:
         _AGENT_SCHEMA_CACHE = None
         _AGENT_SCHEMA_CACHE_CREATED_AT = 0.0
+        _AGENT_SCHEMA_LAST_KNOWN_GOOD = None
+        _AGENT_SCHEMA_LAST_KNOWN_GOOD_CREATED_AT = 0.0
+
+
+def _store_last_known_good_agent_schema(schema: dict[str, Any]) -> None:
+    global _AGENT_SCHEMA_LAST_KNOWN_GOOD, _AGENT_SCHEMA_LAST_KNOWN_GOOD_CREATED_AT
+    with _AGENT_SCHEMA_LOCK:
+        _AGENT_SCHEMA_LAST_KNOWN_GOOD = copy.deepcopy(schema)
+        _AGENT_SCHEMA_LAST_KNOWN_GOOD_CREATED_AT = time.time()
+
+
+def _get_last_known_good_agent_schema() -> dict[str, Any] | None:
+    with _AGENT_SCHEMA_LOCK:
+        if _AGENT_SCHEMA_LAST_KNOWN_GOOD is None:
+            return None
+        return copy.deepcopy(_AGENT_SCHEMA_LAST_KNOWN_GOOD)
 
 
 def _build_agent_schema_uncached() -> dict[str, Any]:
@@ -316,20 +341,18 @@ def _build_agent_schema_uncached() -> dict[str, Any]:
     try:
         raw_schema = proposeAgentSchemaFromTruth(SOURCE_OF_TRUTH_SCHEMA)
     except AgentSchemaError as exc:
-        _AGENT_SCHEMA_SOURCE = "fallback"
+        cached_schema = _get_last_known_good_agent_schema()
+        if cached_schema is not None:
+            _AGENT_SCHEMA_SOURCE = "cached_last_good"
+            _AGENT_SCHEMA_LAST_ERROR = (
+                f"Gemini schema generation failed: {exc}. Using last known-good cached schema."
+            )
+            return cached_schema
+        _AGENT_SCHEMA_SOURCE = "unavailable"
         _AGENT_SCHEMA_LAST_ERROR = (
-            f"Gemini schema generation failed: {exc}. Using fallback schema."
+            f"Gemini schema generation failed: {exc}. No cached schema is available."
         )
-        fallback = _minimal_fallback_agent_schema()
-        fallback_errors = _validate_agent_schema(
-            fallback,
-            SOURCE_OF_TRUTH_SCHEMA,
-            strict_templates=False,
-        )
-        if fallback_errors:
-            error_text = "; ".join(fallback_errors)
-            raise AgentSchemaError(f"Failed to build fallback agent schema: {error_text}")
-        return fallback
+        raise AgentSchemaError(_AGENT_SCHEMA_LAST_ERROR)
 
     raw_schema = _normalize_agent_schema(raw_schema, SOURCE_OF_TRUTH_SCHEMA)
     errors = _validate_agent_schema(raw_schema, SOURCE_OF_TRUTH_SCHEMA, strict_templates=True)
@@ -337,6 +360,7 @@ def _build_agent_schema_uncached() -> dict[str, Any]:
         _AGENT_SCHEMA_SOURCE = "gemini"
         _AGENT_SCHEMA_LAST_ERROR = None
         _AGENT_SCHEMA_LAST_GEMINI_SUCCESS_AT = time.time()
+        _store_last_known_good_agent_schema(raw_schema)
         return raw_schema
 
     repair_error_text: str | None = None
@@ -355,30 +379,35 @@ def _build_agent_schema_uncached() -> dict[str, Any]:
         _AGENT_SCHEMA_SOURCE = "gemini_repair"
         _AGENT_SCHEMA_LAST_ERROR = None
         _AGENT_SCHEMA_LAST_GEMINI_SUCCESS_AT = time.time()
+        _store_last_known_good_agent_schema(repair_schema)
         return repair_schema
 
-    _AGENT_SCHEMA_SOURCE = "fallback"
     primary_errors = "; ".join(errors[:3]) if errors else "unknown validation error"
+    validation_error_text = (
+        "Gemini schema failed validation; "
+        f"repair failed: {repair_error_text}; "
+        f"validation details: {primary_errors}."
+        if repair_error_text
+        else f"Gemini schema failed validation: {primary_errors}."
+    )
+    cached_schema = _get_last_known_good_agent_schema()
+    if cached_schema is not None:
+        _AGENT_SCHEMA_SOURCE = "cached_last_good"
+        _AGENT_SCHEMA_LAST_ERROR = f"{validation_error_text} Using last known-good cached schema."
+        return cached_schema
+
+    _AGENT_SCHEMA_SOURCE = "unavailable"
     if repair_error_text:
         _AGENT_SCHEMA_LAST_ERROR = (
             "Gemini schema failed validation; "
             f"repair failed: {repair_error_text}; "
-            f"validation details: {primary_errors}. Using fallback schema."
+            f"validation details: {primary_errors}. No cached schema is available."
         )
     else:
         _AGENT_SCHEMA_LAST_ERROR = (
-            f"Gemini schema failed validation: {primary_errors}. Using fallback schema."
+            f"Gemini schema failed validation: {primary_errors}. No cached schema is available."
         )
-    fallback = _minimal_fallback_agent_schema()
-    fallback_errors = _validate_agent_schema(
-        fallback,
-        SOURCE_OF_TRUTH_SCHEMA,
-        strict_templates=False,
-    )
-    if fallback_errors:
-        error_text = "; ".join(fallback_errors)
-        raise AgentSchemaError(f"Failed to build fallback agent schema: {error_text}")
-    return fallback
+    raise AgentSchemaError(_AGENT_SCHEMA_LAST_ERROR)
 
 
 def proposeAgentSchemaFromTruth(truthSchema: dict[str, Any]) -> dict[str, Any]:
@@ -1294,230 +1323,6 @@ def _canonical_join(join: dict[str, Any]) -> tuple[str, str, str, str, str, str 
     )
 
 
-def _minimal_fallback_agent_schema() -> dict[str, Any]:
-    max_limit = _read_int_env("MAX_RESULT_ROWS", 50)
-    return {
-        "dialect": "postgres",
-        "tables": copy.deepcopy(SOURCE_OF_TRUTH_SCHEMA["tables"]),
-        "joins": copy.deepcopy(SOURCE_OF_TRUTH_SCHEMA["joins"]),
-        "query_templates": [
-            {
-                "key": "list_routes",
-                "description": "List GTFS routes with optional route_type filter.",
-                "required_inputs": [],
-                "sql_template": (
-                    "SELECT routes.route_id, routes.route_short_name, routes.route_long_name, "
-                    "routes.route_type, routes.route_color, routes.route_text_color "
-                    "FROM routes "
-                    "WHERE ($2::int IS NULL OR routes.route_type = $2) "
-                    f"ORDER BY routes.route_sort_order NULLS LAST, routes.route_short_name LIMIT LEAST($1, {max_limit})"
-                ),
-                "params": ["limit", "route_type"],
-                "default_limit": min(25, max_limit),
-                "display_key": "routes_table",
-                "safety_notes": "Bounded by MAX_RESULT_ROWS.",
-            },
-            {
-                "key": "list_stops",
-                "description": "List stops with optional nearby bounding box filter.",
-                "required_inputs": [],
-                "sql_template": (
-                    "SELECT stops.stop_id, stops.stop_name, stops.stop_lat, stops.stop_lon, "
-                    "stops.wheelchair_boarding, stops.parent_station "
-                    "FROM stops "
-                    "WHERE ($2::double precision IS NULL OR $3::double precision IS NULL "
-                    "OR ($4::double precision IS NOT NULL AND "
-                    "stops.stop_lat BETWEEN ($2 - ($4 / 111.0)) AND ($2 + ($4 / 111.0)) "
-                    "AND stops.stop_lon BETWEEN ($3 - ($4 / NULLIF(111.0 * COS(RADIANS($2)), 0))) "
-                    "AND ($3 + ($4 / NULLIF(111.0 * COS(RADIANS($2)), 0))))) "
-                    "ORDER BY stops.stop_name "
-                    f"LIMIT LEAST($1, {max_limit})"
-                ),
-                "params": ["limit", "lat", "lon", "radius_km"],
-                "default_limit": min(50, max_limit),
-                "display_key": "stops_table",
-                "safety_notes": "Bounding box for nearby search; bounded rows.",
-            },
-            {
-                "key": "busiest_stops",
-                "description": "Top stops by scheduled stop events.",
-                "required_inputs": [],
-                "sql_template": (
-                    "SELECT stops.stop_id, stops.stop_name, COUNT(*)::bigint AS scheduled_stop_events "
-                    "FROM stop_times "
-                    "INNER JOIN stops ON stops.stop_id = stop_times.stop_id "
-                    "GROUP BY stops.stop_id, stops.stop_name "
-                    "ORDER BY scheduled_stop_events DESC, stops.stop_name "
-                    f"LIMIT LEAST($1, {max_limit})"
-                ),
-                "params": ["limit"],
-                "default_limit": min(10, max_limit),
-                "display_key": "busiest_stops_table",
-                "safety_notes": "Aggregated and row-limited.",
-            },
-            {
-                "key": "busiest_routes",
-                "description": "Top routes by scheduled stop events.",
-                "required_inputs": [],
-                "sql_template": (
-                    "SELECT routes.route_id, routes.route_short_name, routes.route_long_name, "
-                    "COUNT(*)::bigint AS scheduled_stop_events "
-                    "FROM stop_times "
-                    "INNER JOIN trips ON trips.trip_id = stop_times.trip_id "
-                    "INNER JOIN routes ON routes.route_id = trips.route_id "
-                    "GROUP BY routes.route_id, routes.route_short_name, routes.route_long_name "
-                    "ORDER BY scheduled_stop_events DESC, routes.route_short_name "
-                    f"LIMIT LEAST($1, {max_limit})"
-                ),
-                "params": ["limit"],
-                "default_limit": min(10, max_limit),
-                "display_key": "busiest_routes_table",
-                "safety_notes": "Aggregated and row-limited.",
-            },
-            {
-                "key": "stop_service_volume",
-                "description": (
-                    "Estimate service volume for a stop by counting scheduled stop events, "
-                    "distinct trips, and distinct routes."
-                ),
-                "required_inputs": [
-                    {
-                        "name": "stop_id|stop_name",
-                        "type": "string",
-                        "notes": "Provide either stop_id or stop name substring.",
-                    }
-                ],
-                "sql_template": (
-                    "SELECT "
-                    "COALESCE(MAX(stops.stop_name), $2, $1) AS stop_label, "
-                    "COUNT(*)::bigint AS scheduled_stop_events, "
-                    "COUNT(DISTINCT stop_times.trip_id)::bigint AS distinct_trips, "
-                    "COUNT(DISTINCT trips.route_id)::bigint AS distinct_routes "
-                    "FROM stop_times "
-                    "INNER JOIN trips ON trips.trip_id = stop_times.trip_id "
-                    "INNER JOIN stops ON stops.stop_id = stop_times.stop_id "
-                    "WHERE (($1::text IS NOT NULL AND stop_times.stop_id = $1) "
-                    "OR ($2::text IS NOT NULL AND stops.stop_name ILIKE '%' || $2 || '%')) "
-                    "LIMIT 1"
-                ),
-                "params": ["stop_id", "stop_name"],
-                "default_limit": 1,
-                "display_key": "stop_volume_summary",
-                "safety_notes": "Bounded aggregate query for stop-level service volume.",
-            },
-            {
-                "key": "arrivals_for_stop",
-                "description": "Upcoming arrivals/departures at a stop.",
-                "required_inputs": [
-                    {"name": "stop_id", "type": "string", "notes": "GTFS stop_id value."}
-                ],
-                "sql_template": (
-                    "SELECT stop_times.arrival_time, stop_times.departure_time, routes.route_short_name, "
-                    "trips.trip_headsign, stop_times.stop_sequence "
-                    "FROM stop_times "
-                    "INNER JOIN trips ON trips.trip_id = stop_times.trip_id "
-                    "INNER JOIN routes ON routes.route_id = trips.route_id "
-                    "WHERE stop_times.stop_id = $1 "
-                    "ORDER BY stop_times.arrival_time "
-                    f"LIMIT LEAST($2, {max_limit})"
-                ),
-                "params": ["stop_id", "limit"],
-                "default_limit": min(30, max_limit),
-                "display_key": "arrivals_table",
-                "safety_notes": "Requires stop_id and bounded limit.",
-            },
-        ],
-        "display_templates": [
-            {
-                "key": "routes_table",
-                "title_template": "Routes ({row_count})",
-                "columns": [
-                    {"name": "route_id", "label": "Route ID"},
-                    {"name": "route_short_name", "label": "Short Name"},
-                    {"name": "route_long_name", "label": "Long Name"},
-                    {"name": "route_type", "label": "Type"},
-                ],
-                "row_id_field": "route_id",
-                "formatting": {"time_fields": [], "latlon_fields": [], "color_fields": ["route_color"]},
-            },
-            {
-                "key": "stops_table",
-                "title_template": "Stops ({row_count})",
-                "columns": [
-                    {"name": "stop_id", "label": "Stop ID"},
-                    {"name": "stop_name", "label": "Stop Name"},
-                    {"name": "stop_lat", "label": "Latitude"},
-                    {"name": "stop_lon", "label": "Longitude"},
-                    {"name": "wheelchair_boarding", "label": "Wheelchair"},
-                ],
-                "row_id_field": "stop_id",
-                "formatting": {
-                    "time_fields": [],
-                    "latlon_fields": ["stop_lat", "stop_lon"],
-                    "color_fields": [],
-                },
-            },
-            {
-                "key": "busiest_stops_table",
-                "title_template": "Top busiest stops ({row_count})",
-                "columns": [
-                    {"name": "stop_id", "label": "Stop ID"},
-                    {"name": "stop_name", "label": "Stop Name"},
-                    {"name": "scheduled_stop_events", "label": "Scheduled Stop Events"},
-                ],
-                "row_id_field": "stop_id",
-                "formatting": {"time_fields": [], "latlon_fields": [], "color_fields": []},
-            },
-            {
-                "key": "busiest_routes_table",
-                "title_template": "Top busiest routes ({row_count})",
-                "columns": [
-                    {"name": "route_id", "label": "Route ID"},
-                    {"name": "route_short_name", "label": "Short Name"},
-                    {"name": "route_long_name", "label": "Long Name"},
-                    {"name": "scheduled_stop_events", "label": "Scheduled Stop Events"},
-                ],
-                "row_id_field": "route_id",
-                "formatting": {"time_fields": [], "latlon_fields": [], "color_fields": []},
-            },
-            {
-                "key": "stop_volume_summary",
-                "title_template": "Estimated service volume for {stop_name} {stop_id}",
-                "columns": [
-                    {"name": "stop_label", "label": "Stop"},
-                    {"name": "scheduled_stop_events", "label": "Scheduled Stop Events"},
-                    {"name": "distinct_trips", "label": "Distinct Trips"},
-                    {"name": "distinct_routes", "label": "Distinct Routes"},
-                ],
-                "row_id_field": None,
-                "formatting": {
-                    "time_fields": [],
-                    "latlon_fields": [],
-                    "color_fields": [],
-                },
-            },
-            {
-                "key": "arrivals_table",
-                "title_template": "Arrivals for stop {stop_id} ({row_count})",
-                "columns": [
-                    {"name": "arrival_time", "label": "Arrival"},
-                    {"name": "departure_time", "label": "Departure"},
-                    {"name": "route_short_name", "label": "Route"},
-                    {"name": "trip_headsign", "label": "Headsign"},
-                    {"name": "stop_sequence", "label": "Sequence"},
-                ],
-                "row_id_field": None,
-                "formatting": {
-                    "time_fields": ["arrival_time", "departure_time"],
-                    "latlon_fields": [],
-                    "color_fields": [],
-                },
-            },
-        ],
-        "constraints": {"max_limit": max_limit, "require_limit": True, "no_select_star": True},
-    }
-
-
 def _choose_template_key(user_text: str, template_map: dict[str, dict[str, Any]]) -> str | None:
     text_lower = user_text.lower()
     if "stop_service_volume" in template_map:
@@ -1565,7 +1370,7 @@ def _choose_template_key(user_text: str, template_map: dict[str, dict[str, Any]]
             return "busiest_routes"
 
     # Avoid routing specific intents to generic list templates when specialized
-    # templates are unavailable (e.g., fallback schema); ask clarifying instead.
+    # templates are unavailable; ask clarifying instead.
     specific_intent_markers = (
         "busiest",
         "arrival",

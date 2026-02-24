@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import unittest
@@ -8,7 +9,6 @@ from app.gtfs_agent import (
     _call_gemini_json,
     _normalize_agent_schema,
     SOURCE_OF_TRUTH_SCHEMA,
-    _minimal_fallback_agent_schema,
     _validate_agent_schema,
     clearAgentSchemaCache,
     getAgentSchema,
@@ -31,6 +31,170 @@ class _FakeHTTPResponse:
         return json.dumps(self._payload).encode("utf-8")
 
 
+def _sample_agent_schema(max_limit: int = 50) -> dict:
+    display_key = "generic_table"
+    return {
+        "dialect": "postgres",
+        "tables": copy.deepcopy(SOURCE_OF_TRUTH_SCHEMA["tables"]),
+        "joins": copy.deepcopy(SOURCE_OF_TRUTH_SCHEMA["joins"]),
+        "query_templates": [
+            {
+                "key": "list_routes",
+                "description": "List routes.",
+                "required_inputs": [],
+                "sql_template": "SELECT routes.route_id FROM routes LIMIT LEAST($1, 50)",
+                "params": ["limit"],
+                "default_limit": min(10, max_limit),
+                "display_key": display_key,
+                "safety_notes": "Bounded query.",
+            },
+            {
+                "key": "route_details",
+                "description": "Route details.",
+                "required_inputs": [{"name": "route_id", "type": "string", "notes": "Route ID"}],
+                "sql_template": (
+                    "SELECT routes.route_id FROM routes "
+                    "WHERE routes.route_id = $1 LIMIT LEAST($2, 50)"
+                ),
+                "params": ["route_id", "limit"],
+                "default_limit": 1,
+                "display_key": display_key,
+                "safety_notes": "Bounded query.",
+            },
+            {
+                "key": "list_stops",
+                "description": "List stops.",
+                "required_inputs": [],
+                "sql_template": "SELECT stops.stop_id FROM stops LIMIT LEAST($1, 50)",
+                "params": ["limit"],
+                "default_limit": min(10, max_limit),
+                "display_key": display_key,
+                "safety_notes": "Bounded query.",
+            },
+            {
+                "key": "stop_details",
+                "description": "Stop details.",
+                "required_inputs": [{"name": "stop_id", "type": "string", "notes": "Stop ID"}],
+                "sql_template": (
+                    "SELECT stops.stop_id FROM stops "
+                    "WHERE stops.stop_id = $1 LIMIT LEAST($2, 50)"
+                ),
+                "params": ["stop_id", "limit"],
+                "default_limit": 1,
+                "display_key": display_key,
+                "safety_notes": "Bounded query.",
+            },
+            {
+                "key": "stops_on_route",
+                "description": "Stops on route.",
+                "required_inputs": [{"name": "route_id", "type": "string", "notes": "Route ID"}],
+                "sql_template": (
+                    "SELECT stops.stop_id FROM stops "
+                    "INNER JOIN stop_times ON stop_times.stop_id = stops.stop_id "
+                    "INNER JOIN trips ON trips.trip_id = stop_times.trip_id "
+                    "WHERE trips.route_id = $1 LIMIT LEAST($2, 50)"
+                ),
+                "params": ["route_id", "limit"],
+                "default_limit": min(10, max_limit),
+                "display_key": display_key,
+                "safety_notes": "Bounded query.",
+            },
+            {
+                "key": "routes_serving_stop",
+                "description": "Routes serving stop.",
+                "required_inputs": [{"name": "stop_id", "type": "string", "notes": "Stop ID"}],
+                "sql_template": (
+                    "SELECT routes.route_id FROM routes "
+                    "INNER JOIN trips ON trips.route_id = routes.route_id "
+                    "INNER JOIN stop_times ON stop_times.trip_id = trips.trip_id "
+                    "WHERE stop_times.stop_id = $1 LIMIT LEAST($2, 50)"
+                ),
+                "params": ["stop_id", "limit"],
+                "default_limit": min(10, max_limit),
+                "display_key": display_key,
+                "safety_notes": "Bounded query.",
+            },
+            {
+                "key": "arrivals_for_stop",
+                "description": "Arrivals for stop.",
+                "required_inputs": [{"name": "stop_id", "type": "string", "notes": "Stop ID"}],
+                "sql_template": (
+                    "SELECT stop_times.arrival_time FROM stop_times "
+                    "WHERE stop_times.stop_id = $1 LIMIT LEAST($2, 50)"
+                ),
+                "params": ["stop_id", "limit"],
+                "default_limit": min(10, max_limit),
+                "display_key": display_key,
+                "safety_notes": "Bounded query.",
+            },
+            {
+                "key": "busiest_stops",
+                "description": "Busiest stops.",
+                "required_inputs": [],
+                "sql_template": (
+                    "SELECT stops.stop_id, COUNT(*)::bigint AS c "
+                    "FROM stops INNER JOIN stop_times ON stop_times.stop_id = stops.stop_id "
+                    "GROUP BY stops.stop_id ORDER BY c DESC LIMIT LEAST($1, 50)"
+                ),
+                "params": ["limit"],
+                "default_limit": min(10, max_limit),
+                "display_key": display_key,
+                "safety_notes": "Bounded query.",
+            },
+            {
+                "key": "busiest_routes",
+                "description": "Busiest routes.",
+                "required_inputs": [],
+                "sql_template": (
+                    "SELECT routes.route_id, COUNT(*)::bigint AS c "
+                    "FROM routes INNER JOIN trips ON trips.route_id = routes.route_id "
+                    "GROUP BY routes.route_id ORDER BY c DESC LIMIT LEAST($1, 50)"
+                ),
+                "params": ["limit"],
+                "default_limit": min(10, max_limit),
+                "display_key": display_key,
+                "safety_notes": "Bounded query.",
+            },
+            {
+                "key": "accessible_stops",
+                "description": "Accessible stops.",
+                "required_inputs": [],
+                "sql_template": (
+                    "SELECT stops.stop_id FROM stops "
+                    "WHERE stops.wheelchair_boarding = 1 LIMIT LEAST($1, 50)"
+                ),
+                "params": ["limit"],
+                "default_limit": min(10, max_limit),
+                "display_key": display_key,
+                "safety_notes": "Bounded query.",
+            },
+            {
+                "key": "accessible_trips",
+                "description": "Accessible trips.",
+                "required_inputs": [],
+                "sql_template": (
+                    "SELECT trips.trip_id FROM trips "
+                    "WHERE trips.wheelchair_accessible = 1 LIMIT LEAST($1, 50)"
+                ),
+                "params": ["limit"],
+                "default_limit": min(10, max_limit),
+                "display_key": display_key,
+                "safety_notes": "Bounded query.",
+            },
+        ],
+        "display_templates": [
+            {
+                "key": display_key,
+                "title_template": "Results ({row_count})",
+                "columns": [{"name": "route_id", "label": "Route ID"}],
+                "row_id_field": None,
+                "formatting": {"time_fields": [], "latlon_fields": [], "color_fields": []},
+            }
+        ],
+        "constraints": {"max_limit": max_limit, "require_limit": True, "no_select_star": True},
+    }
+
+
 class AgentSchemaTests(unittest.TestCase):
     def setUp(self):
         clearAgentSchemaCache()
@@ -49,7 +213,7 @@ class AgentSchemaTests(unittest.TestCase):
         self.assertFalse(isDatabaseQuestion("Write me a haiku about rain"))
 
     def test_validation_rejects_hallucinated_column(self):
-        schema = _minimal_fallback_agent_schema()
+        schema = _sample_agent_schema()
         schema["tables"]["routes"]["columns"].append("invented_column")
         errors = _validate_agent_schema(
             schema,
@@ -59,7 +223,7 @@ class AgentSchemaTests(unittest.TestCase):
         self.assertTrue(any("tables.routes.columns" in error for error in errors))
 
     def test_normalize_agent_schema_clamps_max_limit_and_adds_limit(self):
-        schema = _minimal_fallback_agent_schema()
+        schema = _sample_agent_schema()
         schema["constraints"]["max_limit"] = 500
         schema["query_templates"][0]["sql_template"] = (
             "SELECT routes.route_id, routes.route_short_name FROM routes"
@@ -82,7 +246,7 @@ class AgentSchemaTests(unittest.TestCase):
         self.assertIn("limit 50", normalized["query_templates"][1]["sql_template"].lower())
 
     def test_get_agent_schema_uses_cache(self):
-        mocked_schema = _minimal_fallback_agent_schema()
+        mocked_schema = _sample_agent_schema()
         with patch("app.gtfs_agent._build_agent_schema_uncached", return_value=mocked_schema) as mocked:
             first = getAgentSchema()
             second = getAgentSchema()
@@ -91,17 +255,24 @@ class AgentSchemaTests(unittest.TestCase):
         self.assertEqual(first["dialect"], "postgres")
         self.assertEqual(second["dialect"], "postgres")
 
-    def test_get_agent_schema_status_surfaces_gemini_error_detail(self):
-        with patch(
-            "app.gtfs_agent.proposeAgentSchemaFromTruth",
-            side_effect=AgentSchemaError("Gemini request failed with HTTP 401."),
-        ):
-            schema = getAgentSchema()
-
+    def test_get_agent_schema_status_falls_back_to_last_known_good_cache(self):
+        with patch.dict(os.environ, {"SCHEMA_CACHE_SECONDS": "0"}, clear=False):
+            with patch(
+                "app.gtfs_agent.proposeAgentSchemaFromTruth",
+                return_value=_sample_agent_schema(),
+            ):
+                first_schema = getAgentSchema()
+            with patch(
+                "app.gtfs_agent.proposeAgentSchemaFromTruth",
+                side_effect=AgentSchemaError("Gemini request failed with HTTP 401."),
+            ):
+                second_schema = getAgentSchema()
         status = getAgentSchemaStatus()
-        self.assertEqual(status["source"], "fallback")
+        self.assertEqual(status["source"], "cached_last_good")
         self.assertIn("HTTP 401", status.get("last_error") or "")
-        self.assertEqual(schema["dialect"], "postgres")
+        self.assertEqual(first_schema["dialect"], "postgres")
+        self.assertEqual(second_schema["dialect"], "postgres")
+        self.assertEqual(first_schema, second_schema)
 
     def test_call_gemini_json_retries_after_timeout(self):
         call_count = {"value": 0}
