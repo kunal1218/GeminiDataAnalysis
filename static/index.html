@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gemini DB Chat</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <h1>Gemini + Postgres Chat</h1>
+        <p>Ask data questions. App calls Gemini, then runs read-only SQL.</p>
+      </header>
+
+      <section id="chat-log" class="chat-log" aria-live="polite">
+        <article class="message assistant">
+          <div class="bubble">
+            Hi. Ask a question about your database, and I will return a read-only result.
+          </div>
+        </article>
+      </section>
+
+      <form id="chat-form" class="chat-form">
+        <textarea
+          id="chat-input"
+          placeholder="Ask a database question..."
+          rows="1"
+          maxlength="4000"
+          required
+        ></textarea>
+        <button id="send-btn" type="submit">Send</button>
+      </form>
+    </main>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
