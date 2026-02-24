@@ -288,9 +288,11 @@ def _build_agent_schema_uncached() -> dict[str, Any]:
     _AGENT_SCHEMA_LAST_GEMINI_ATTEMPT_AT = time.time()
     try:
         raw_schema = proposeAgentSchemaFromTruth(SOURCE_OF_TRUTH_SCHEMA)
-    except AgentSchemaError:
+    except AgentSchemaError as exc:
         _AGENT_SCHEMA_SOURCE = "fallback"
-        _AGENT_SCHEMA_LAST_ERROR = "Gemini schema generation failed. Using fallback schema."
+        _AGENT_SCHEMA_LAST_ERROR = (
+            f"Gemini schema generation failed: {exc}. Using fallback schema."
+        )
         fallback = _minimal_fallback_agent_schema()
         fallback_errors = _validate_agent_schema(
             fallback,
@@ -309,13 +311,15 @@ def _build_agent_schema_uncached() -> dict[str, Any]:
         _AGENT_SCHEMA_LAST_GEMINI_SUCCESS_AT = time.time()
         return raw_schema
 
+    repair_error_text: str | None = None
     try:
         repair_schema = _propose_repaired_agent_schema(
             SOURCE_OF_TRUTH_SCHEMA,
             previous_schema=raw_schema,
             validation_errors=errors,
         )
-    except AgentSchemaError:
+    except AgentSchemaError as exc:
+        repair_error_text = str(exc)
         repair_schema = {}
     repair_errors = _validate_agent_schema(repair_schema, SOURCE_OF_TRUTH_SCHEMA, strict_templates=True)
     if not repair_errors:
@@ -325,7 +329,17 @@ def _build_agent_schema_uncached() -> dict[str, Any]:
         return repair_schema
 
     _AGENT_SCHEMA_SOURCE = "fallback"
-    _AGENT_SCHEMA_LAST_ERROR = "Gemini schema failed validation. Using fallback schema."
+    primary_errors = "; ".join(errors[:3]) if errors else "unknown validation error"
+    if repair_error_text:
+        _AGENT_SCHEMA_LAST_ERROR = (
+            "Gemini schema failed validation; "
+            f"repair failed: {repair_error_text}; "
+            f"validation details: {primary_errors}. Using fallback schema."
+        )
+    else:
+        _AGENT_SCHEMA_LAST_ERROR = (
+            f"Gemini schema failed validation: {primary_errors}. Using fallback schema."
+        )
     fallback = _minimal_fallback_agent_schema()
     fallback_errors = _validate_agent_schema(
         fallback,
@@ -610,11 +624,19 @@ def _call_gemini_json(prompt: str) -> str:
         with urlrequest.urlopen(request, timeout=timeout_seconds) as response:
             raw = response.read().decode("utf-8")
     except urlerror.HTTPError as exc:
-        raise AgentSchemaError(f"Gemini request failed with HTTP {exc.code}.") from exc
+        detail = _extract_http_error_detail(exc)
+        suffix = f": {detail}" if detail else ""
+        raise AgentSchemaError(
+            f"Gemini request failed for model '{model}' with HTTP {exc.code}{suffix}."
+        ) from exc
     except urlerror.URLError as exc:
-        raise AgentSchemaError("Gemini request failed due to network error.") from exc
+        reason = str(getattr(exc, "reason", "")).strip()
+        suffix = f": {reason}" if reason else ""
+        raise AgentSchemaError(
+            f"Gemini request failed for model '{model}' due to network error{suffix}."
+        ) from exc
     except TimeoutError as exc:
-        raise AgentSchemaError("Gemini request timed out.") from exc
+        raise AgentSchemaError(f"Gemini request timed out for model '{model}'.") from exc
 
     try:
         payload_json = json.loads(raw)
@@ -629,6 +651,26 @@ def _call_gemini_json(prompt: str) -> str:
     if not text_output:
         raise AgentSchemaError("Gemini returned empty schema content.")
     return text_output
+
+
+def _extract_http_error_detail(exc: urlerror.HTTPError) -> str:
+    try:
+        raw = exc.read().decode("utf-8", errors="ignore").strip()
+    except Exception:
+        return ""
+    if not raw:
+        return ""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw[:200]
+    if isinstance(payload, dict):
+        err = payload.get("error")
+        if isinstance(err, dict):
+            message = err.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()[:200]
+    return raw[:200]
 
 
 def _extract_json_object(raw_text: str) -> dict[str, Any]:

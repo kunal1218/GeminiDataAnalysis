@@ -2,11 +2,13 @@ import unittest
 from unittest.mock import patch
 
 from app.gtfs_agent import (
+    AgentSchemaError,
     SOURCE_OF_TRUTH_SCHEMA,
     _minimal_fallback_agent_schema,
     _validate_agent_schema,
     clearAgentSchemaCache,
     getAgentSchema,
+    getAgentSchemaStatus,
     isDatabaseQuestion,
 )
 
@@ -45,6 +47,18 @@ class AgentSchemaTests(unittest.TestCase):
         self.assertEqual(mocked.call_count, 1)
         self.assertEqual(first["dialect"], "postgres")
         self.assertEqual(second["dialect"], "postgres")
+
+    def test_get_agent_schema_status_surfaces_gemini_error_detail(self):
+        with patch(
+            "app.gtfs_agent.proposeAgentSchemaFromTruth",
+            side_effect=AgentSchemaError("Gemini request failed with HTTP 401."),
+        ):
+            schema = getAgentSchema()
+
+        status = getAgentSchemaStatus()
+        self.assertEqual(status["source"], "fallback")
+        self.assertIn("HTTP 401", status.get("last_error") or "")
+        self.assertEqual(schema["dialect"], "postgres")
 
 
 if __name__ == "__main__":
