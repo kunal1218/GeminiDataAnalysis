@@ -1,10 +1,11 @@
-# Gemini + Railway Postgres Chat (FastAPI)
+# GTFS Agent Chat (FastAPI + Postgres + Gemini)
 
-Minimal web app for interview demos:
+Minimal interview app:
 - FastAPI backend
-- Simple chat frontend (no auth, direct to chat)
-- Gemini API call to produce structured query plans
-- Read-only PostgreSQL execution against Railway
+- Simple chat frontend
+- GTFS-only query agent over 4 source tables (`routes`, `trips`, `stop_times`, `stops`)
+- Gemini generates and caches an agent schema (templates + display spec)
+- Backend executes parameterized SQL safely with row limits
 
 ## 1) Setup
 
@@ -15,11 +16,16 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Fill `.env` with your real values:
+Required env vars:
+- `DATABASE_URL`
 - `GEMINI_API_KEY`
-- `DATABASE_URL` (Railway Postgres URL)
-- `GEMINI_MODEL` (optional, defaults to `gemini-2.0-flash`)
-- `SCHEMA_EXECUTION_MODE` (optional, `dry_run` or `apply`, default `dry_run`)
+
+Optional env vars:
+- `DATABASE_SSL` (default handled by code)
+- `GEMINI_MODEL` (defaults to `gemini-2.0-flash`)
+- `GEMINI_TIMEOUT_SECONDS` (default `20`)
+- `MAX_RESULT_ROWS` (default `50`)
+- `SCHEMA_CACHE_SECONDS` (default `300`)
 
 ## 2) Run
 
@@ -30,41 +36,11 @@ uvicorn app.main:app --reload
 Open:
 - http://127.0.0.1:8000
 
-## 3) Deploy on Vercel
+## 3) Behavior
 
-Use these project settings:
-- Preset: `FastAPI`
-- Root Directory: `./`
-- Build Command: leave empty
-- Output Directory: leave empty
-
-Environment Variables (Project Settings -> Environment Variables):
-- `GEMINI_API_KEY`
-- `GEMINI_MODEL` (optional, defaults to `gemini-2.0-flash`)
-- `DATABASE_URL`
-- `DATABASE_SSL` (optional, defaults to `true` for Railway-like URLs)
-- `MAX_RESULT_ROWS` (optional)
-- `SCHEMA_CACHE_SECONDS` (optional)
-- `GEMINI_TIMEOUT_SECONDS` (optional)
-
-This repo includes:
-- `app/index.py` as a Vercel-supported FastAPI entrypoint.
-- `vercel.json` with function `maxDuration` config.
-
-## 4) How it works
-
-1. Frontend sends `message + history` to `/api/chat`.
-2. Backend fetches DB schema from `information_schema`.
-3. Backend prompts Gemini to return strict JSON:
-   - `assistant_message`
-   - `run_query`
-   - optional query object (`sql`, `params`, `reason`)
-4. Backend validates SQL as read-only, enforces `LIMIT`, runs query in a read-only transaction.
-5. Frontend displays assistant text, executed SQL, and result rows.
-
-## 5) Safety notes
-
-- SQL is blocked unless it starts with `SELECT` or `WITH`.
-- Common write/mutation keywords are rejected.
-- Query runs with `readonly=True` transaction.
-- Still treat this as demo-only. For production, add stronger SQL parsing/allowlists.
+1. `isDatabaseQuestion()` gates requests.
+2. Non-DB requests return normal chat fallback and never call Gemini schema generation.
+3. DB requests use cached `getAgentSchema()` (Gemini once per cache window).
+4. `proposeQueryPlan()` selects a template and builds parameterized SQL.
+5. SQL executes against Postgres with enforced row limits.
+6. `renderDisplayPayload()` maps results to UI-friendly display templates.

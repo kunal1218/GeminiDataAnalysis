@@ -27,56 +27,40 @@ function appendMessage(role, text, payload = null) {
     const meta = document.createElement("div");
     meta.className = "meta";
 
-    if (payload.query_executed && payload.sql) {
+    if (payload.query_plan && payload.query_plan.sql) {
       const label = document.createElement("div");
-      label.textContent = `Executed SQL (${payload.row_count || 0} rows):`;
+      label.textContent = "Query plan SQL:";
       meta.appendChild(label);
 
       const pre = document.createElement("pre");
-      pre.textContent = payload.sql;
+      const params = Array.isArray(payload.params) ? payload.params : [];
+      pre.textContent = `${payload.query_plan.sql}\n\nparams: ${JSON.stringify(params)}`;
       meta.appendChild(pre);
+    }
 
-      if (Array.isArray(payload.rows) && payload.rows.length > 0) {
+    if (payload.display) {
+      const title = document.createElement("div");
+      title.textContent = payload.display.title || "Results";
+      meta.appendChild(title);
+
+      if (Array.isArray(payload.display.rows) && payload.display.rows.length > 0) {
         const tableWrap = document.createElement("div");
         tableWrap.className = "table-wrap";
-        tableWrap.appendChild(renderTable(payload.rows));
+        tableWrap.appendChild(renderDisplayTable(payload.display));
         meta.appendChild(tableWrap);
+      } else if (payload.query_executed) {
+        const empty = document.createElement("div");
+        empty.textContent = "No rows returned.";
+        meta.appendChild(empty);
       }
+    } else if (payload.query_executed && Array.isArray(payload.rows) && payload.rows.length > 0) {
+      const tableWrap = document.createElement("div");
+      tableWrap.className = "table-wrap";
+      tableWrap.appendChild(renderTable(payload.rows));
+      meta.appendChild(tableWrap);
     }
 
-    if (payload.proposed_schema) {
-      const schemaLabel = document.createElement("div");
-      schemaLabel.textContent = "Proposed schema:";
-      meta.appendChild(schemaLabel);
-
-      const schemaPre = document.createElement("pre");
-      schemaPre.textContent = JSON.stringify(payload.proposed_schema, null, 2);
-      meta.appendChild(schemaPre);
-    }
-
-    if (payload.schema_execution) {
-      const exec = payload.schema_execution;
-      const execSummary = document.createElement("div");
-      const status = exec.success ? "success" : "failed";
-      execSummary.textContent =
-        `Schema execution (${exec.mode || "dry_run"}): ${status}, ` +
-        `${exec.statement_count || 0} statements`;
-      meta.appendChild(execSummary);
-
-      if (Array.isArray(exec.statements) && exec.statements.length > 0) {
-        const sqlPre = document.createElement("pre");
-        sqlPre.textContent = exec.statements.join(";\n") + ";";
-        meta.appendChild(sqlPre);
-      }
-
-      if (exec.error) {
-        const execError = document.createElement("div");
-        execError.textContent = `Execution error: ${exec.error}`;
-        meta.appendChild(execError);
-      }
-    }
-
-    if (payload.error && !(payload.schema_execution && payload.schema_execution.error)) {
+    if (payload.error) {
       const error = document.createElement("div");
       error.textContent = `Error: ${payload.error}`;
       meta.appendChild(error);
@@ -89,6 +73,36 @@ function appendMessage(role, text, payload = null) {
 
   chatLog.appendChild(message);
   scrollToBottom();
+}
+
+function renderDisplayTable(display) {
+  const table = document.createElement("table");
+  const columns = Array.isArray(display.columns) ? display.columns : [];
+  const rows = Array.isArray(display.rows) ? display.rows : [];
+
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  columns.forEach((column) => {
+    const th = document.createElement("th");
+    th.textContent = column.label || column.name;
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    columns.forEach((column) => {
+      const td = document.createElement("td");
+      const value = row[column.name];
+      td.textContent = value === null || value === undefined ? "" : String(value);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  return table;
 }
 
 function renderTable(rows) {

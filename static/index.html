@@ -15,14 +15,14 @@
   <body>
     <main class="app-shell">
       <header class="app-header">
-        <h1>Gemini + Postgres Chat</h1>
-        <p>Ask data questions. App calls Gemini, then runs read-only SQL.</p>
+        <h1>GTFS Query Chat</h1>
+        <p>Ask about routes, stops, trips, arrivals, accessibility, and busiest lines.</p>
       </header>
 
       <section id="chat-log" class="chat-log" aria-live="polite">
         <article class="message assistant">
           <div class="bubble">
-            Hi. Ask a question about your database, and I will return a read-only result.
+            Hi. Ask a GTFS question like "arrivals for stop_id 1234" or "top 10 busiest stops".
           </div>
         </article>
       </section>
@@ -30,7 +30,7 @@
       <form id="chat-form" class="chat-form">
         <textarea
           id="chat-input"
-          placeholder="Ask a database question..."
+          placeholder="Ask a GTFS database question..."
           rows="1"
           maxlength="4000"
           required
