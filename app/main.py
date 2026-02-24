@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app.db import validate_database_config
+from app.db import validate_database_config, verify_database_connection
 from app.gtfs_agent import (
     AgentSchemaError,
     QueryPlanError,
@@ -53,6 +53,7 @@ class ChatResponse(BaseModel):
 @app.on_event("startup")
 def warm_agent_schema() -> None:
     validate_database_config()
+    verify_database_connection()
     try:
         getAgentSchema()
     except AgentSchemaError:

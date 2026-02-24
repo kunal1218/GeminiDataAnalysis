@@ -17,15 +17,19 @@ cp .env.example .env
 ```
 
 Required env vars:
-- `DATABASE_PUBLIC_URL` (preferred; Railway public connection URL)
+- `DATABASE_URL` (Railway internal URL; used when running on Railway)
+- `DATABASE_PUBLIC_URL` (Railway public proxy URL; used outside Railway)
 - `GEMINI_API_KEY`
 
-Database URL priority is:
-1. `DATABASE_PUBLIC_URL`
-2. `DATABASE_URL`
-3. `DATABASE_PRIVATE_URL` (only when `ALLOW_DATABASE_PRIVATE_URL=true`)
+Database URL selection:
+1. If `RAILWAY_ENVIRONMENT` or `RAILWAY_PROJECT_ID` exists, app requires and uses `DATABASE_URL`.
+2. Otherwise (local/Vercel/etc.), app prefers `DATABASE_PUBLIC_URL`.
+3. If `DATABASE_PUBLIC_URL` is missing, app falls back to `DATABASE_URL`.
 
-If the selected URL is Railway internal (`*.railway.internal`) and `DATABASE_PUBLIC_URL` is not set, startup fails with a clear error so the service never attempts internal-only hosts from this deployment.
+Safety checks:
+- Outside Railway runtime, internal hosts (`*.railway.internal`) are rejected with a clear startup error.
+- Startup runs `SELECT 1` and fails fast when DB config is invalid.
+- Public Railway hosts enforce SSL (`sslmode=require`).
 
 Optional env vars:
 - `DATABASE_SSL` (default handled by code)
