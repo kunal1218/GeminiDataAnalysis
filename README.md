@@ -17,8 +17,10 @@ cp .env.example .env
 ```
 
 Required env vars:
-- `DATABASE_URL`
+- `DATABASE_URL` (or `DATABASE_URL_PUBLIC` / `DATABASE_PUBLIC_URL`)
 - `GEMINI_API_KEY`
+
+If deploying outside Railway (for example Vercel), set `DATABASE_URL_PUBLIC` (or `DATABASE_PUBLIC_URL`) to Railway's public URL (for example `*.proxy.rlwy.net`). The app automatically prefers the public URL when `DATABASE_URL` is internal (`*.railway.internal`).
 
 Optional env vars:
 - `DATABASE_SSL` (default handled by code)

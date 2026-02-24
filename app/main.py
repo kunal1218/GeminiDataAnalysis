@@ -11,6 +11,7 @@ from app.gtfs_agent import (
     QueryPlanError,
     executeParameterizedQuery,
     getAgentSchema,
+    getAgentSchemaStatus,
     isDatabaseQuestion,
     proposeQueryPlan,
     renderDisplayPayload,
@@ -45,6 +46,7 @@ class ChatResponse(BaseModel):
     agent_schema: dict[str, Any] | None = None
     query_plan: dict[str, Any] | None = None
     display: dict[str, Any] | None = None
+    agent_status: dict[str, Any] | None = None
 
 
 @app.on_event("startup")
@@ -60,20 +62,25 @@ def process_user_message(user_text: str) -> ChatResponse:
     if not isDatabaseQuestion(user_text):
         return ChatResponse(
             assistant_message=(
-                "I can help with GTFS database questions about routes, stops, trips, stop times, "
-                "arrivals, accessibility, and busiest routes/stops."
+                "I can help with GTFS queries. Try: "
+                "\"show me what routes there are\", "
+                "\"arrivals for stop_id 1234\", "
+                "\"top 10 busiest stops\", "
+                "or \"accessible trips\"."
             ),
             is_database_question=False,
         )
 
     try:
         agent_schema = getAgentSchema()
+        agent_status = getAgentSchemaStatus()
         query_plan = proposeQueryPlan(user_text, agent_schema)
     except (AgentSchemaError, QueryPlanError) as exc:
         return ChatResponse(
             assistant_message="I could not build a safe GTFS query plan right now.",
             error=str(exc),
             is_database_question=True,
+            agent_status=getAgentSchemaStatus(),
         )
 
     clarifying_question = query_plan.get("clarifying_question")
@@ -83,19 +90,28 @@ def process_user_message(user_text: str) -> ChatResponse:
             is_database_question=True,
             agent_schema=agent_schema,
             query_plan=query_plan,
+            agent_status=agent_status,
         )
 
     execution = executeParameterizedQuery(query_plan)
     if not execution.get("success"):
+        raw_error = str(execution.get("error") or "")
+        friendly_error = _friendly_db_error(raw_error)
+        preview_display = renderDisplayPayload([], query_plan, agent_schema)
         return ChatResponse(
-            assistant_message="I generated a query plan, but execution failed.",
+            assistant_message=(
+                "I generated a valid query plan, but could not execute it right now. "
+                f"{friendly_error}"
+            ),
             query_executed=bool(execution.get("executed")),
             sql=query_plan.get("sql"),
             params=query_plan.get("params", []),
-            error=execution.get("error"),
+            error=raw_error,
             is_database_question=True,
             agent_schema=agent_schema,
             query_plan=query_plan,
+            display=preview_display,
+            agent_status=agent_status,
         )
 
     rows = execution.get("rows", [])
@@ -111,7 +127,22 @@ def process_user_message(user_text: str) -> ChatResponse:
         agent_schema=agent_schema,
         query_plan=query_plan,
         display=display_payload,
+        agent_status=agent_status,
     )
+
+
+def _friendly_db_error(raw_error: str) -> str:
+    lower = raw_error.lower()
+    if "could not translate host name" in lower or "name or service not known" in lower:
+        return (
+            "Database host lookup failed. Use Railway's public connection URL for this deployment "
+            "(not an internal-only host)."
+        )
+    if "password authentication failed" in lower:
+        return "Database authentication failed. Verify DATABASE_URL username/password."
+    if "timeout" in lower:
+        return "Database connection timed out. Check network access and DB availability."
+    return "Check DATABASE_URL / DATABASE_SSL settings and retry."
 
 
 @app.get("/")

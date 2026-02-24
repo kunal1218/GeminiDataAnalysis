@@ -129,6 +129,10 @@ _REQUIRED_TEMPLATE_KEYS = {
 _AGENT_SCHEMA_CACHE: dict[str, Any] | None = None
 _AGENT_SCHEMA_CACHE_CREATED_AT = 0.0
 _AGENT_SCHEMA_LOCK = Lock()
+_AGENT_SCHEMA_SOURCE = "unknown"
+_AGENT_SCHEMA_LAST_ERROR: str | None = None
+_AGENT_SCHEMA_LAST_GEMINI_ATTEMPT_AT = 0.0
+_AGENT_SCHEMA_LAST_GEMINI_SUCCESS_AT = 0.0
 
 
 class AgentSchemaError(RuntimeError):
@@ -184,11 +188,52 @@ def isDatabaseQuestion(userText: str) -> bool:
     if any(signal in text for signal in db_signals):
         return True
 
+    entity_tokens = {
+        "route",
+        "routes",
+        "stop",
+        "stops",
+        "trip",
+        "trips",
+        "arrival",
+        "arrivals",
+        "departure",
+        "departures",
+        "schedule",
+        "schedules",
+        "stop_times",
+    }
+    intent_tokens = {
+        "show",
+        "list",
+        "what",
+        "which",
+        "find",
+        "get",
+        "top",
+        "busiest",
+        "nearby",
+        "accessible",
+        "accessibility",
+        "serving",
+        "details",
+    }
+    token_set = set(re.findall(r"[a-z0-9_]+", text))
+    if token_set.intersection(entity_tokens) and token_set.intersection(intent_tokens):
+        return True
+
     patterns = (
         r"\blist\b.*\broutes?\b",
         r"\blist\b.*\bstops?\b",
+        r"\bshow\b.*\broutes?\b",
+        r"\bshow\b.*\btrips?\b",
+        r"\bwhat\b.*\broutes?\b",
+        r"\bwhat\b.*\btrips?\b",
+        r"\bwhat\b.*\bstops?\b",
         r"\bwhich\b.*\broutes?\b.*\bstop\b",
         r"\bstops?\b.*\bon\b.*\broute\b",
+        r"\broutes?\b.*\bthere\b.*\bare\b",
+        r"\btrips?\b.*\boccur",
         r"\barrivals?\b.*\bstop\b",
         r"\bdepartures?\b.*\bstop\b",
     )
@@ -216,6 +261,19 @@ def getAgentSchema() -> dict[str, Any]:
     return copy.deepcopy(schema)
 
 
+def getAgentSchemaStatus() -> dict[str, Any]:
+    with _AGENT_SCHEMA_LOCK:
+        return {
+            "source": _AGENT_SCHEMA_SOURCE,
+            "last_error": _AGENT_SCHEMA_LAST_ERROR,
+            "last_gemini_attempt_at": _AGENT_SCHEMA_LAST_GEMINI_ATTEMPT_AT,
+            "last_gemini_success_at": _AGENT_SCHEMA_LAST_GEMINI_SUCCESS_AT,
+            "cache_age_seconds": max(0.0, time.time() - _AGENT_SCHEMA_CACHE_CREATED_AT)
+            if _AGENT_SCHEMA_CACHE_CREATED_AT
+            else None,
+        }
+
+
 def clearAgentSchemaCache() -> None:
     global _AGENT_SCHEMA_CACHE, _AGENT_SCHEMA_CACHE_CREATED_AT
     with _AGENT_SCHEMA_LOCK:
@@ -224,9 +282,15 @@ def clearAgentSchemaCache() -> None:
 
 
 def _build_agent_schema_uncached() -> dict[str, Any]:
+    global _AGENT_SCHEMA_SOURCE, _AGENT_SCHEMA_LAST_ERROR
+    global _AGENT_SCHEMA_LAST_GEMINI_ATTEMPT_AT, _AGENT_SCHEMA_LAST_GEMINI_SUCCESS_AT
+
+    _AGENT_SCHEMA_LAST_GEMINI_ATTEMPT_AT = time.time()
     try:
         raw_schema = proposeAgentSchemaFromTruth(SOURCE_OF_TRUTH_SCHEMA)
     except AgentSchemaError:
+        _AGENT_SCHEMA_SOURCE = "fallback"
+        _AGENT_SCHEMA_LAST_ERROR = "Gemini schema generation failed. Using fallback schema."
         fallback = _minimal_fallback_agent_schema()
         fallback_errors = _validate_agent_schema(
             fallback,
@@ -240,6 +304,9 @@ def _build_agent_schema_uncached() -> dict[str, Any]:
 
     errors = _validate_agent_schema(raw_schema, SOURCE_OF_TRUTH_SCHEMA, strict_templates=True)
     if not errors:
+        _AGENT_SCHEMA_SOURCE = "gemini"
+        _AGENT_SCHEMA_LAST_ERROR = None
+        _AGENT_SCHEMA_LAST_GEMINI_SUCCESS_AT = time.time()
         return raw_schema
 
     try:
@@ -252,8 +319,13 @@ def _build_agent_schema_uncached() -> dict[str, Any]:
         repair_schema = {}
     repair_errors = _validate_agent_schema(repair_schema, SOURCE_OF_TRUTH_SCHEMA, strict_templates=True)
     if not repair_errors:
+        _AGENT_SCHEMA_SOURCE = "gemini_repair"
+        _AGENT_SCHEMA_LAST_ERROR = None
+        _AGENT_SCHEMA_LAST_GEMINI_SUCCESS_AT = time.time()
         return repair_schema
 
+    _AGENT_SCHEMA_SOURCE = "fallback"
+    _AGENT_SCHEMA_LAST_ERROR = "Gemini schema failed validation. Using fallback schema."
     fallback = _minimal_fallback_agent_schema()
     fallback_errors = _validate_agent_schema(
         fallback,
@@ -965,8 +1037,27 @@ def _choose_template_key(user_text: str, template_map: dict[str, dict[str, Any]]
         if any(signal in text_lower for signal in signals):
             return key
 
+    # Avoid routing specific intents to generic list templates when specialized
+    # templates are unavailable (e.g., fallback schema); ask clarifying instead.
+    specific_intent_markers = (
+        "busiest",
+        "arrival",
+        "arrivals",
+        "departure",
+        "departures",
+        "accessible",
+        "accessibility",
+        "serving",
+        "details",
+        "nearby",
+    )
+    if any(marker in text_lower for marker in specific_intent_markers):
+        return None
+
     if "route" in text_lower and "list_routes" in template_map:
         return "list_routes"
+    if "trip" in text_lower and "accessible_trips" in template_map:
+        return "accessible_trips"
     if "stop" in text_lower and "list_stops" in template_map:
         return "list_stops"
     return None
@@ -1147,6 +1238,7 @@ __all__ = [
     "clearAgentSchemaCache",
     "executeParameterizedQuery",
     "getAgentSchema",
+    "getAgentSchemaStatus",
     "isDatabaseQuestion",
     "proposeAgentSchemaFromTruth",
     "proposeQueryPlan",

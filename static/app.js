@@ -38,6 +38,23 @@ function appendMessage(role, text, payload = null) {
       meta.appendChild(pre);
     }
 
+    if (payload.agent_status) {
+      const status = payload.agent_status;
+      const statusLine = document.createElement("div");
+      const source = status.source || "unknown";
+      const cacheAge =
+        typeof status.cache_age_seconds === "number"
+          ? `${Math.round(status.cache_age_seconds)}s`
+          : "n/a";
+      statusLine.textContent = `Schema source: ${source} (cache age: ${cacheAge})`;
+      meta.appendChild(statusLine);
+      if (status.last_error) {
+        const statusError = document.createElement("div");
+        statusError.textContent = `Schema note: ${status.last_error}`;
+        meta.appendChild(statusError);
+      }
+    }
+
     if (payload.display) {
       const title = document.createElement("div");
       title.textContent = payload.display.title || "Results";

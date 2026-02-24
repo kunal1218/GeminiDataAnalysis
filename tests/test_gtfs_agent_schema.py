@@ -20,6 +20,8 @@ class AgentSchemaTests(unittest.TestCase):
 
     def test_is_database_question_true(self):
         self.assertTrue(isDatabaseQuestion("Show arrivals for stop_id 1234"))
+        self.assertTrue(isDatabaseQuestion("Please show me what routes there are"))
+        self.assertTrue(isDatabaseQuestion("What trips have occurred?"))
 
     def test_is_database_question_false(self):
         self.assertFalse(isDatabaseQuestion("Write me a haiku about rain"))

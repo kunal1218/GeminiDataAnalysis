@@ -109,6 +109,51 @@ class ExecutionAndHandlerTests(unittest.TestCase):
         self.assertEqual(response.display["title"], "Routes (1)")
         self.assertEqual(response.display["rows"][0]["route_id"], "10")
 
+    def test_process_user_message_db_failure_returns_useful_hint(self):
+        agent_schema = {
+            "display_templates": [
+                {
+                    "key": "routes_table",
+                    "title_template": "Routes ({row_count})",
+                    "columns": [{"name": "route_id", "label": "Route ID"}],
+                    "row_id_field": "route_id",
+                    "formatting": {"time_fields": [], "latlon_fields": [], "color_fields": []},
+                }
+            ]
+        }
+        query_plan = {
+            "sql": "SELECT routes.route_id FROM routes LIMIT LEAST($1, 50)",
+            "params": [1],
+            "display_key": "routes_table",
+            "param_map": {"limit": 1},
+            "clarifying_question": None,
+        }
+        execution_result = {
+            "executed": True,
+            "success": False,
+            "rows": [],
+            "row_count": 0,
+            "columns": [],
+            "error": (
+                "(psycopg2.OperationalError) could not translate host name "
+                "\"postgres.railway.internal\" to address"
+            ),
+        }
+
+        with patch("app.main.getAgentSchema", return_value=agent_schema):
+            with patch(
+                "app.main.getAgentSchemaStatus",
+                return_value={"source": "fallback", "last_error": None, "cache_age_seconds": 3},
+            ):
+                with patch("app.main.proposeQueryPlan", return_value=query_plan):
+                    with patch("app.main.executeParameterizedQuery", return_value=execution_result):
+                        response = process_user_message("arrivals for stop_id 1234")
+
+        self.assertTrue(response.is_database_question)
+        self.assertTrue(response.query_executed)
+        self.assertIn("public connection url", response.assistant_message.lower())
+        self.assertIsNotNone(response.display)
+
 
 if __name__ == "__main__":
     unittest.main()
