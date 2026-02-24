@@ -6,6 +6,7 @@ from unittest.mock import patch
 from app.gtfs_agent import (
     AgentSchemaError,
     _call_gemini_json,
+    _normalize_agent_schema,
     SOURCE_OF_TRUTH_SCHEMA,
     _minimal_fallback_agent_schema,
     _validate_agent_schema,
@@ -54,6 +55,29 @@ class AgentSchemaTests(unittest.TestCase):
             strict_templates=False,
         )
         self.assertTrue(any("tables.routes.columns" in error for error in errors))
+
+    def test_normalize_agent_schema_clamps_max_limit_and_adds_limit(self):
+        schema = _minimal_fallback_agent_schema()
+        schema["constraints"]["max_limit"] = 500
+        schema["query_templates"][0]["sql_template"] = (
+            "SELECT routes.route_id, routes.route_short_name FROM routes"
+        )
+        schema["query_templates"][1]["sql_template"] = (
+            "SELECT stops.stop_id, stops.stop_name FROM stops WHERE ($1::text IS NULL OR stops.stop_name ILIKE '%' || $1 || '%')"
+        )
+        normalized = _normalize_agent_schema(schema, SOURCE_OF_TRUTH_SCHEMA)
+        errors = _validate_agent_schema(
+            normalized,
+            SOURCE_OF_TRUTH_SCHEMA,
+            strict_templates=False,
+        )
+        self.assertFalse(
+            any("must include a bounded LIMIT" in error for error in errors),
+            msg=f"unexpected validation errors: {errors}",
+        )
+        self.assertEqual(normalized["constraints"]["max_limit"], 50)
+        self.assertIn("limit 50", normalized["query_templates"][0]["sql_template"].lower())
+        self.assertIn("limit 50", normalized["query_templates"][1]["sql_template"].lower())
 
     def test_get_agent_schema_uses_cache(self):
         mocked_schema = _minimal_fallback_agent_schema()

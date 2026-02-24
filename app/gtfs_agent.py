@@ -304,6 +304,7 @@ def _build_agent_schema_uncached() -> dict[str, Any]:
             raise AgentSchemaError(f"Failed to build fallback agent schema: {error_text}")
         return fallback
 
+    raw_schema = _normalize_agent_schema(raw_schema, SOURCE_OF_TRUTH_SCHEMA)
     errors = _validate_agent_schema(raw_schema, SOURCE_OF_TRUTH_SCHEMA, strict_templates=True)
     if not errors:
         _AGENT_SCHEMA_SOURCE = "gemini"
@@ -321,6 +322,7 @@ def _build_agent_schema_uncached() -> dict[str, Any]:
     except AgentSchemaError as exc:
         repair_error_text = str(exc)
         repair_schema = {}
+    repair_schema = _normalize_agent_schema(repair_schema, SOURCE_OF_TRUTH_SCHEMA)
     repair_errors = _validate_agent_schema(repair_schema, SOURCE_OF_TRUTH_SCHEMA, strict_templates=True)
     if not repair_errors:
         _AGENT_SCHEMA_SOURCE = "gemini_repair"
@@ -890,6 +892,99 @@ def _validate_agent_schema(
         errors.append(f"query_templates missing required keys: {', '.join(missing)}")
 
     return errors
+
+
+def _normalize_agent_schema(
+    agent_schema: dict[str, Any],
+    truth_schema: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(agent_schema, dict):
+        return agent_schema
+
+    normalized = copy.deepcopy(agent_schema)
+    env_max_limit = _read_int_env("MAX_RESULT_ROWS", 50)
+
+    constraints = normalized.get("constraints")
+    if isinstance(constraints, dict):
+        max_limit = constraints.get("max_limit")
+        if not isinstance(max_limit, int) or max_limit <= 0:
+            max_limit = env_max_limit
+        max_limit = min(max_limit, env_max_limit)
+        constraints["max_limit"] = max_limit
+        constraints["require_limit"] = True
+        constraints["no_select_star"] = True
+    else:
+        max_limit = env_max_limit
+
+    truth_table_names = set(truth_schema.get("tables", {}).keys())
+    query_templates = normalized.get("query_templates")
+    if isinstance(query_templates, list):
+        for template in query_templates:
+            if not isinstance(template, dict):
+                continue
+
+            sql_template = template.get("sql_template")
+            if isinstance(sql_template, str) and sql_template.strip():
+                table_refs = {
+                    table_name
+                    for table_name in truth_table_names
+                    if re.search(rf"\b{re.escape(table_name)}\b", sql_template.lower())
+                }
+                if table_refs:
+                    template["sql_template"] = _normalize_sql_limit_clause(sql_template, max_limit)
+
+            default_limit = template.get("default_limit")
+            if not isinstance(default_limit, int) or default_limit <= 0:
+                template["default_limit"] = min(25, max_limit)
+            elif default_limit > max_limit:
+                template["default_limit"] = max_limit
+
+    return normalized
+
+
+def _normalize_sql_limit_clause(sql_template: str, max_limit: int) -> str:
+    sql = sql_template.strip()
+    lower_sql = sql.lower()
+
+    least_match = re.search(r"\blimit\s+least\s*\(\s*\$(\d+)\s*,\s*(\d+)\s*\)", lower_sql)
+    if least_match:
+        current_bound = int(least_match.group(2))
+        if current_bound > max_limit:
+            return re.sub(
+                r"\blimit\s+least\s*\(\s*\$(\d+)\s*,\s*\d+\s*\)",
+                lambda match: f"LIMIT LEAST(${match.group(1)}, {max_limit})",
+                sql,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        return sql
+
+    param_limit_match = re.search(r"\blimit\s+\$(\d+)\b", lower_sql)
+    if param_limit_match:
+        placeholder_idx = param_limit_match.group(1)
+        return re.sub(
+            r"\blimit\s+\$\d+\b",
+            f"LIMIT LEAST(${placeholder_idx}, {max_limit})",
+            sql,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+
+    const_limit_match = re.search(r"\blimit\s+(\d+)\b", lower_sql)
+    if const_limit_match:
+        current_bound = int(const_limit_match.group(1))
+        if current_bound <= max_limit:
+            return sql
+        return re.sub(
+            r"\blimit\s+\d+\b",
+            f"LIMIT {max_limit}",
+            sql,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+
+    sql_no_semicolon = sql.rstrip().rstrip(";")
+    return f"{sql_no_semicolon} LIMIT {max_limit}"
 
 
 def _validate_sql_template(
