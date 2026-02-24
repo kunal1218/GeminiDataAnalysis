@@ -44,6 +44,16 @@ function appendMessage(role, text, payload = null) {
       }
     }
 
+    if (payload.proposed_schema) {
+      const schemaLabel = document.createElement("div");
+      schemaLabel.textContent = "Proposed schema:";
+      meta.appendChild(schemaLabel);
+
+      const schemaPre = document.createElement("pre");
+      schemaPre.textContent = JSON.stringify(payload.proposed_schema, null, 2);
+      meta.appendChild(schemaPre);
+    }
+
     if (payload.error) {
       const error = document.createElement("div");
       error.textContent = `Error: ${payload.error}`;
