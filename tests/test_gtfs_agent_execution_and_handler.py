@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from app.gtfs_agent import executeParameterizedQuery
-from app.main import process_user_message
+from app.main import process_user_message, warm_agent_schema
 
 
 class _FakeRow:
@@ -153,6 +153,32 @@ class ExecutionAndHandlerTests(unittest.TestCase):
         self.assertTrue(response.query_executed)
         self.assertIn("public connection url", response.assistant_message.lower())
         self.assertIsNotNone(response.display)
+
+    def test_execute_parameterized_query_handles_runtime_config_error(self):
+        query_plan = {
+            "sql": "SELECT routes.route_id FROM routes LIMIT LEAST($1, 50)",
+            "params": [1],
+            "safety": {"row_limit": 1},
+        }
+
+        with patch(
+            "app.gtfs_agent.get_engine",
+            side_effect=RuntimeError(
+                "Detected Railway internal DB host outside Railway runtime."
+            ),
+        ):
+            result = executeParameterizedQuery(query_plan)
+
+        self.assertFalse(result["success"])
+        self.assertIn("outside Railway runtime", result["error"])
+
+    def test_warm_agent_schema_does_not_crash_on_db_config_error(self):
+        with patch(
+            "app.main.validate_database_config",
+            side_effect=RuntimeError("missing DATABASE_PUBLIC_URL"),
+        ):
+            with patch("app.main.verify_database_connection", side_effect=AssertionError("must not call")):
+                warm_agent_schema()
 
 
 if __name__ == "__main__":

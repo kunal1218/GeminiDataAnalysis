@@ -641,7 +641,7 @@ def executeParameterizedQuery(query_plan: dict[str, Any]) -> dict[str, Any]:
         with engine.connect() as connection:
             result = connection.execute(text(converted_sql), bind_params)
             rows = [dict(row._mapping) for row in result]
-    except SQLAlchemyError as exc:
+    except (SQLAlchemyError, RuntimeError) as exc:
         return {
             "executed": True,
             "success": False,

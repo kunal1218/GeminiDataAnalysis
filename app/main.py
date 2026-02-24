@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Any, Literal
 
@@ -23,6 +24,7 @@ STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+LOGGER = logging.getLogger(__name__)
 
 
 class ChatMessage(BaseModel):
@@ -52,8 +54,14 @@ class ChatResponse(BaseModel):
 
 @app.on_event("startup")
 def warm_agent_schema() -> None:
-    validate_database_config()
-    verify_database_connection()
+    try:
+        validate_database_config()
+        verify_database_connection()
+    except RuntimeError as exc:
+        # Do not crash serverless cold start for configuration mistakes.
+        # Query execution paths will still return actionable DB errors.
+        LOGGER.warning("Startup DB check skipped: %s", str(exc))
+        return
     try:
         getAgentSchema()
     except AgentSchemaError:
@@ -136,6 +144,11 @@ def process_user_message(user_text: str) -> ChatResponse:
 
 def _friendly_db_error(raw_error: str) -> str:
     lower = raw_error.lower()
+    if "internal db host outside railway runtime" in lower:
+        return (
+            "Database host is internal-only. Set DATABASE_PUBLIC_URL (or DATABASE_URL_PUBLIC) "
+            "to Railway's Public connection URL in this deployment environment."
+        )
     if "could not translate host name" in lower or "name or service not known" in lower:
         return (
             "Database host lookup failed. Use Railway's public connection URL for this deployment "
