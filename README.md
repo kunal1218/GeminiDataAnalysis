@@ -28,7 +28,28 @@ uvicorn app.main:app --reload
 Open:
 - http://127.0.0.1:8000
 
-## 3) How it works
+## 3) Deploy on Vercel
+
+Use these project settings:
+- Preset: `FastAPI`
+- Root Directory: `./`
+- Build Command: leave empty
+- Output Directory: leave empty
+
+Environment Variables (Project Settings -> Environment Variables):
+- `GEMINI_API_KEY`
+- `GEMINI_MODEL` (optional, defaults to `gemini-2.0-flash`)
+- `DATABASE_URL`
+- `DATABASE_SSL` (optional, defaults to `true` for Railway-like URLs)
+- `MAX_RESULT_ROWS` (optional)
+- `SCHEMA_CACHE_SECONDS` (optional)
+- `GEMINI_TIMEOUT_SECONDS` (optional)
+
+This repo includes:
+- `app/index.py` as a Vercel-supported FastAPI entrypoint.
+- `vercel.json` with function `maxDuration` config.
+
+## 4) How it works
 
 1. Frontend sends `message + history` to `/api/chat`.
 2. Backend fetches DB schema from `information_schema`.
@@ -39,7 +60,7 @@ Open:
 4. Backend validates SQL as read-only, enforces `LIMIT`, runs query in a read-only transaction.
 5. Frontend displays assistant text, executed SQL, and result rows.
 
-## 4) Safety notes
+## 5) Safety notes
 
 - SQL is blocked unless it starts with `SELECT` or `WITH`.
 - Common write/mutation keywords are rejected.
