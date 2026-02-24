@@ -380,6 +380,11 @@ def proposeQueryPlan(userText: str, agentSchema: dict[str, Any]) -> dict[str, An
     if not isinstance(templates, list) or not templates:
         raise QueryPlanError("agentSchema.query_templates must contain at least one template.")
 
+    max_limit = _read_int_env("MAX_RESULT_ROWS", 50)
+    gemini_plan = _propose_query_plan_from_headers(userText, max_limit)
+    if gemini_plan is not None:
+        return gemini_plan
+
     template_map = {
         template.get("key"): template
         for template in templates
@@ -399,7 +404,6 @@ def proposeQueryPlan(userText: str, agentSchema: dict[str, Any]) -> dict[str, An
         }
 
     template = template_map[template_key]
-    max_limit = _read_int_env("MAX_RESULT_ROWS", 50)
     extracted = _extract_user_values(userText)
     row_limit = _compute_row_limit(extracted, template, max_limit)
 
@@ -455,6 +459,83 @@ def proposeQueryPlan(userText: str, agentSchema: dict[str, Any]) -> dict[str, An
         "clarifying_question": None,
         "safety": {
             "row_limit": row_limit,
+            "max_limit": max_limit,
+            "no_select_star": True,
+        },
+    }
+
+
+def _propose_query_plan_from_headers(user_text: str, max_limit: int) -> dict[str, Any] | None:
+    if not os.getenv("GEMINI_API_KEY", "").strip():
+        return None
+
+    prompt = _build_query_plan_prompt(user_text, SOURCE_OF_TRUTH_SCHEMA, max_limit)
+    try:
+        payload_text = _call_gemini_json(prompt)
+        payload = _extract_json_object(payload_text)
+    except AgentSchemaError:
+        return None
+
+    possible = payload.get("possible")
+    if possible is not True:
+        return _not_possible_query_plan(max_limit)
+
+    sql = payload.get("sql")
+    params = payload.get("params", [])
+    if not isinstance(sql, str) or not sql.strip():
+        return _not_possible_query_plan(max_limit)
+    if not isinstance(params, list):
+        return _not_possible_query_plan(max_limit)
+
+    normalized_params: list[Any] = []
+    for param in params:
+        if isinstance(param, (str, int, float, bool)) or param is None:
+            normalized_params.append(param)
+        else:
+            normalized_params.append(str(param))
+
+    requested_limit = payload.get("row_limit")
+    row_limit = requested_limit if isinstance(requested_limit, int) else max_limit
+    row_limit = max(1, min(row_limit, max_limit))
+    sql, normalized_params = _apply_sql_safety(sql, normalized_params, row_limit, max_limit)
+
+    validation_errors = _validate_sql_template(
+        sql,
+        max_limit,
+        SOURCE_OF_TRUTH_SCHEMA,
+        "gemini_generated",
+    )
+    placeholders = [int(value) for value in re.findall(r"\$(\d+)", sql)]
+    if placeholders and max(placeholders) > len(normalized_params):
+        return _not_possible_query_plan(max_limit)
+    if validation_errors:
+        return _not_possible_query_plan(max_limit)
+
+    return {
+        "template_key": "gemini_generated",
+        "sql": sql,
+        "params": normalized_params,
+        "param_map": {},
+        "display_key": None,
+        "clarifying_question": None,
+        "safety": {
+            "row_limit": row_limit,
+            "max_limit": max_limit,
+            "no_select_star": True,
+        },
+    }
+
+
+def _not_possible_query_plan(max_limit: int) -> dict[str, Any]:
+    return {
+        "template_key": "gemini_not_possible",
+        "sql": None,
+        "params": [],
+        "param_map": {},
+        "display_key": None,
+        "clarifying_question": "not possible",
+        "safety": {
+            "row_limit": 0,
             "max_limit": max_limit,
             "no_select_star": True,
         },
@@ -612,6 +693,38 @@ def _build_repair_prompt(
         f"truthSchema={truth_json}\n"
         f"validationErrors={error_json}\n"
         f"previousSchema={previous_json}"
+    )
+
+
+def _build_query_plan_prompt(user_text: str, truth_schema: dict[str, Any], max_limit: int) -> str:
+    truth_json = json.dumps(
+        {
+            "dialect": truth_schema.get("dialect"),
+            "tables": truth_schema.get("tables"),
+            "joins": truth_schema.get("joins"),
+        },
+        ensure_ascii=True,
+    )
+    request_json = json.dumps(user_text, ensure_ascii=True)
+    return (
+        "You are a Postgres query planner over GTFS data.\n"
+        "Return JSON only with this exact shape:\n"
+        "{"
+        '"possible": boolean,'
+        '"sql": string|null,'
+        '"params": [any],'
+        '"row_limit": number|null,'
+        '"reason": string'
+        "}\n"
+        "Rules:\n"
+        "1) If the request cannot be answered from available headers/joins, set possible=false and sql=null.\n"
+        "2) If possible=true, sql must be SELECT-only, parameterized with $1,$2..., and must include LIMIT.\n"
+        "3) Use only tables/columns and join keys from truthSchema.\n"
+        "4) Never use SELECT *.\n"
+        "5) LIMIT must be bounded and <= max_limit.\n"
+        f"max_limit={max_limit}\n"
+        f"userRequest={request_json}\n"
+        f"truthSchema={truth_json}"
     )
 
 
@@ -1021,6 +1134,9 @@ def _validate_sql_template(
     for identifier, column in re.findall(r"\b([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b", lower_sql):
         table_name = alias_map.get(identifier, identifier if identifier in truth_schema["tables"] else None)
         if not table_name:
+            continue
+        if table_name not in truth_schema["tables"]:
+            errors.append(f"query_template '{template_key}' references unknown table '{table_name}'.")
             continue
         allowed_columns = set(truth_schema["tables"][table_name]["columns"])
         if column not in allowed_columns:
