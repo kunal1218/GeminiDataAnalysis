@@ -47,54 +47,71 @@ class QueryPlanningTests(unittest.TestCase):
         self.assertIsNone(plan["sql"])
 
     def test_gemini_planner_possible_query(self):
-        gemini_payload = (
-            '{"possible": true, "sql": "SELECT stops.stop_id, stops.stop_name '
+        feasibility_payload = '{"possible": true, "reason": "can answer from stops headers"}'
+        sql_payload = (
+            '{"sql": "SELECT stops.stop_id, stops.stop_name '
             'FROM stops WHERE stops.stop_name ILIKE \'%\' || $1 || \'%\' LIMIT LEAST($2, 50)", '
             '"params": ["Smith & 5th", 25], "row_limit": 25, "reason": "matched stop_name"}'
         )
         with patch.dict(os.environ, {"GEMINI_API_KEY": "test"}, clear=False):
-            with patch("app.gtfs_agent._call_gemini_json", return_value=gemini_payload):
+            with patch(
+                "app.gtfs_agent._call_gemini_json",
+                side_effect=[feasibility_payload, sql_payload],
+            ) as mocked_call:
                 plan = proposeQueryPlan("find Smith & 5th stop", self.schema)
 
         self.assertIsNone(plan["clarifying_question"])
         self.assertEqual(plan["template_key"], "gemini_generated")
         self.assertIn("from stops", plan["sql"].lower())
         self.assertEqual(plan["params"][0], "Smith & 5th")
+        self.assertEqual(mocked_call.call_count, 2)
+        first_call_kwargs = mocked_call.call_args_list[0].kwargs
+        self.assertEqual(first_call_kwargs.get("retry_count"), 0)
 
     def test_gemini_planner_not_possible(self):
-        gemini_payload = '{"possible": false, "sql": null, "params": [], "row_limit": null, "reason": "not in data"}'
+        feasibility_payload = '{"possible": false, "reason": "not in data"}'
         with patch.dict(os.environ, {"GEMINI_API_KEY": "test"}, clear=False):
-            with patch("app.gtfs_agent._call_gemini_json", return_value=gemini_payload):
+            with patch(
+                "app.gtfs_agent._call_gemini_json",
+                side_effect=[feasibility_payload],
+            ) as mocked_call:
                 plan = proposeQueryPlan("what was fare revenue by day", self.schema)
 
         self.assertEqual(plan["clarifying_question"], "not possible")
         self.assertIsNone(plan["sql"])
         self.assertEqual(plan["not_possible_reason"], "not in data")
+        self.assertEqual(mocked_call.call_count, 1)
 
     def test_gemini_not_possible_still_uses_known_template(self):
-        gemini_payload = (
-            '{"possible": false, "sql": null, "params": [], '
-            '"row_limit": null, "reason": "could not map intent"}'
-        )
+        feasibility_payload = '{"possible": false, "reason": "could not map intent"}'
         with patch.dict(os.environ, {"GEMINI_API_KEY": "test"}, clear=False):
-            with patch("app.gtfs_agent._call_gemini_json", return_value=gemini_payload):
+            with patch(
+                "app.gtfs_agent._call_gemini_json",
+                side_effect=[feasibility_payload],
+            ) as mocked_call:
                 plan = proposeQueryPlan("top 10 busiest stops", self.schema)
 
         self.assertEqual(plan["template_key"], "busiest_stops")
         self.assertIsNone(plan["clarifying_question"])
         self.assertEqual(plan["params"][0], 10)
+        self.assertEqual(mocked_call.call_count, 1)
 
     def test_gemini_planner_invalid_sql_returns_not_possible(self):
-        gemini_payload = (
-            '{"possible": true, "sql": "SELECT fake_table.fake_col FROM fake_table LIMIT 10", '
+        feasibility_payload = '{"possible": true, "reason": "can answer"}'
+        sql_payload = (
+            '{"sql": "SELECT fake_table.fake_col FROM fake_table LIMIT 10", '
             '"params": [], "row_limit": 10, "reason": "bad"}'
         )
         with patch.dict(os.environ, {"GEMINI_API_KEY": "test"}, clear=False):
-            with patch("app.gtfs_agent._call_gemini_json", return_value=gemini_payload):
+            with patch(
+                "app.gtfs_agent._call_gemini_json",
+                side_effect=[feasibility_payload, sql_payload],
+            ) as mocked_call:
                 plan = proposeQueryPlan("give me fake data", self.schema)
 
         self.assertEqual(plan["clarifying_question"], "not possible")
         self.assertIsNone(plan["sql"])
+        self.assertEqual(mocked_call.call_count, 2)
 
 
 if __name__ == "__main__":

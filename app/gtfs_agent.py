@@ -474,24 +474,54 @@ def _propose_query_plan_from_headers(user_text: str, max_limit: int) -> dict[str
     if not os.getenv("GEMINI_API_KEY", "").strip():
         return None
 
-    prompt = _build_query_plan_prompt(user_text, SOURCE_OF_TRUTH_SCHEMA, max_limit)
+    decision_timeout = _read_float_env(
+        "GEMINI_DECISION_TIMEOUT_SECONDS",
+        min(5.0, _read_float_env("GEMINI_TIMEOUT_SECONDS", 30.0)),
+    )
+    decision_timeout = max(0.5, decision_timeout)
+    decision_prompt = _build_query_feasibility_prompt(user_text, SOURCE_OF_TRUTH_SCHEMA)
+
     try:
-        payload_text = _call_gemini_json(prompt)
+        decision_payload_text = _call_gemini_json(
+            decision_prompt,
+            timeout_seconds=decision_timeout,
+            retry_count=0,
+        )
+        decision_payload = _extract_json_object(decision_payload_text)
+    except AgentSchemaError:
+        return None
+
+    possible = decision_payload.get("possible")
+    decision_reason = (
+        decision_payload.get("reason")
+        if isinstance(decision_payload.get("reason"), str)
+        else None
+    )
+    if possible is not True:
+        if possible is False:
+            reason = decision_reason or "Cannot answer this with the available GTFS columns."
+            return _not_possible_query_plan(max_limit, reason=reason)
+        return None
+
+    sql_prompt = _build_query_sql_prompt(user_text, SOURCE_OF_TRUTH_SCHEMA, max_limit)
+    try:
+        payload_text = _call_gemini_json(sql_prompt)
         payload = _extract_json_object(payload_text)
     except AgentSchemaError:
         return None
 
-    possible = payload.get("possible")
-    if possible is not True:
-        reason = payload.get("reason") if isinstance(payload.get("reason"), str) else None
-        return _not_possible_query_plan(max_limit, reason=reason)
-
     sql = payload.get("sql")
     params = payload.get("params", [])
     if not isinstance(sql, str) or not sql.strip():
-        return _not_possible_query_plan(max_limit, reason="Gemini returned empty SQL.")
+        return _not_possible_query_plan(
+            max_limit,
+            reason=decision_reason or "Gemini returned empty SQL.",
+        )
     if not isinstance(params, list):
-        return _not_possible_query_plan(max_limit, reason="Gemini returned invalid params.")
+        return _not_possible_query_plan(
+            max_limit,
+            reason=decision_reason or "Gemini returned invalid params.",
+        )
 
     normalized_params: list[Any] = []
     for param in params:
@@ -501,7 +531,10 @@ def _propose_query_plan_from_headers(user_text: str, max_limit: int) -> dict[str
             normalized_params.append(str(param))
 
     requested_limit = payload.get("row_limit")
-    row_limit = requested_limit if isinstance(requested_limit, int) else max_limit
+    if isinstance(requested_limit, (int, float)):
+        row_limit = int(requested_limit)
+    else:
+        row_limit = max_limit
     row_limit = max(1, min(row_limit, max_limit))
     sql, normalized_params = _apply_sql_safety(sql, normalized_params, row_limit, max_limit)
 
@@ -513,11 +546,14 @@ def _propose_query_plan_from_headers(user_text: str, max_limit: int) -> dict[str
     )
     placeholders = [int(value) for value in re.findall(r"\$(\d+)", sql)]
     if placeholders and max(placeholders) > len(normalized_params):
-        return _not_possible_query_plan(max_limit, reason="SQL placeholders exceed params.")
+        return _not_possible_query_plan(
+            max_limit,
+            reason=decision_reason or "SQL placeholders exceed params.",
+        )
     if validation_errors:
         return _not_possible_query_plan(
             max_limit,
-            reason="; ".join(validation_errors[:2]),
+            reason=decision_reason or "; ".join(validation_errors[:2]),
         )
 
     return {
@@ -706,7 +742,7 @@ def _build_repair_prompt(
     )
 
 
-def _build_query_plan_prompt(user_text: str, truth_schema: dict[str, Any], max_limit: int) -> str:
+def _build_query_feasibility_prompt(user_text: str, truth_schema: dict[str, Any]) -> str:
     truth_json = json.dumps(
         {
             "dialect": truth_schema.get("dialect"),
@@ -717,35 +753,70 @@ def _build_query_plan_prompt(user_text: str, truth_schema: dict[str, Any], max_l
     )
     request_json = json.dumps(user_text, ensure_ascii=True)
     return (
-        "You are a Postgres query planner over GTFS data.\n"
+        "You are a fast feasibility checker for GTFS SQL over Postgres.\n"
+        "Decide if the user request can be answered using ONLY the available tables, columns, and joins.\n"
         "Return JSON only with this exact shape:\n"
         "{"
         '"possible": boolean,'
-        '"sql": string|null,'
-        '"params": [any],'
-        '"row_limit": number|null,'
         '"reason": string'
         "}\n"
         "Rules:\n"
-        "1) If the request cannot be answered from available headers/joins, set possible=false and sql=null.\n"
-        "2) If possible=true, sql must be SELECT-only, parameterized with $1,$2..., and must include LIMIT.\n"
-        "3) Use only tables/columns and join keys from truthSchema.\n"
-        "4) Never use SELECT *.\n"
-        "5) LIMIT must be bounded and <= max_limit.\n"
+        "1) Be conservative. If unsure, return possible=false.\n"
+        "2) Do not generate SQL in this step.\n"
+        "3) Only mark possible=true if the answer can be produced from truthSchema data.\n"
+        f"userRequest={request_json}\n"
+        f"truthSchema={truth_json}"
+    )
+
+
+def _build_query_sql_prompt(user_text: str, truth_schema: dict[str, Any], max_limit: int) -> str:
+    truth_json = json.dumps(
+        {
+            "dialect": truth_schema.get("dialect"),
+            "tables": truth_schema.get("tables"),
+            "joins": truth_schema.get("joins"),
+        },
+        ensure_ascii=True,
+    )
+    request_json = json.dumps(user_text, ensure_ascii=True)
+    return (
+        "You are a Postgres query generator over GTFS data.\n"
+        "Return JSON only with this exact shape:\n"
+        "{"
+        '"sql": string,'
+        '"params": [any],'
+        '"row_limit": number,'
+        '"reason": string'
+        "}\n"
+        "Rules:\n"
+        "1) sql must be SELECT-only, parameterized with $1,$2..., and must include LIMIT.\n"
+        "2) Use only tables/columns and join keys from truthSchema.\n"
+        "3) Never use SELECT *.\n"
+        "4) LIMIT must be bounded and <= max_limit.\n"
+        "5) If stop name matching is used, use ILIKE with concatenated wildcards.\n"
         f"max_limit={max_limit}\n"
         f"userRequest={request_json}\n"
         f"truthSchema={truth_json}"
     )
 
 
-def _call_gemini_json(prompt: str) -> str:
+def _call_gemini_json(
+    prompt: str,
+    *,
+    timeout_seconds: float | None = None,
+    retry_count: int | None = None,
+) -> str:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise AgentSchemaError("GEMINI_API_KEY is required for agent schema generation.")
 
     model = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
-    timeout_seconds = _read_float_env("GEMINI_TIMEOUT_SECONDS", 30.0)
-    retry_count = max(0, _read_int_env("GEMINI_RETRY_COUNT", 1))
+    if timeout_seconds is None:
+        timeout_seconds = _read_float_env("GEMINI_TIMEOUT_SECONDS", 30.0)
+    if retry_count is None:
+        retry_count = _read_int_env("GEMINI_RETRY_COUNT", 1)
+    timeout_seconds = max(0.1, float(timeout_seconds))
+    retry_count = max(0, int(retry_count))
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
     payload = {
