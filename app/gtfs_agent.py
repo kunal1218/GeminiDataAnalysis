@@ -184,6 +184,7 @@ def isDatabaseQuestion(userText: str) -> bool:
         "nearby stops",
         "route details",
         "stop details",
+        "how many people went to",
     )
     if any(signal in text for signal in db_signals):
         return True
@@ -236,6 +237,7 @@ def isDatabaseQuestion(userText: str) -> bool:
         r"\btrips?\b.*\boccur",
         r"\barrivals?\b.*\bstop\b",
         r"\bdepartures?\b.*\bstop\b",
+        r"\bhow many\b.*\bpeople\b.*\bwent to\b",
     )
     return any(re.search(pattern, text) for pattern in patterns)
 
@@ -402,24 +404,35 @@ def proposeQueryPlan(userText: str, agentSchema: dict[str, Any]) -> dict[str, An
     row_limit = _compute_row_limit(extracted, template, max_limit)
 
     required_inputs = template.get("required_inputs", [])
-    required_names = {
-        item.get("name")
-        for item in required_inputs
-        if isinstance(item, dict) and isinstance(item.get("name"), str)
-    }
+    required_groups: list[set[str]] = []
+    for item in required_inputs:
+        if not isinstance(item, dict):
+            continue
+        name_value = item.get("name")
+        if not isinstance(name_value, str):
+            continue
+        group = {part.strip() for part in name_value.split("|") if part.strip()}
+        if group:
+            required_groups.append(group)
 
     params_list: list[Any] = []
     param_map: dict[str, Any] = {}
-    missing: list[str] = []
     for param_name in template.get("params", []):
         value = _resolve_param_value(param_name, extracted, row_limit)
-        if value is None and param_name in required_names:
-            missing.append(param_name)
         params_list.append(value)
         param_map[param_name] = value
 
-    if missing:
-        question = "I need more detail before querying: " + ", ".join(sorted(missing))
+    missing_groups: list[str] = []
+    for group in required_groups:
+        has_any = any(
+            _has_required_value(param_map.get(name)) or _has_required_value(extracted.get(name))
+            for name in group
+        )
+        if not has_any:
+            missing_groups.append(" or ".join(sorted(group)))
+
+    if missing_groups:
+        question = "I need more detail before querying: " + ", ".join(missing_groups)
         return {
             "clarifying_question": question,
             "sql": None,
@@ -1100,6 +1113,37 @@ def _minimal_fallback_agent_schema() -> dict[str, Any]:
                 "safety_notes": "Bounding box for nearby search; bounded rows.",
             },
             {
+                "key": "stop_service_volume",
+                "description": (
+                    "Estimate service volume for a stop by counting scheduled stop events, "
+                    "distinct trips, and distinct routes."
+                ),
+                "required_inputs": [
+                    {
+                        "name": "stop_id|stop_name",
+                        "type": "string",
+                        "notes": "Provide either stop_id or stop name substring.",
+                    }
+                ],
+                "sql_template": (
+                    "SELECT "
+                    "COALESCE(MAX(stops.stop_name), $2, $1) AS stop_label, "
+                    "COUNT(*)::bigint AS scheduled_stop_events, "
+                    "COUNT(DISTINCT stop_times.trip_id)::bigint AS distinct_trips, "
+                    "COUNT(DISTINCT trips.route_id)::bigint AS distinct_routes "
+                    "FROM stop_times "
+                    "INNER JOIN trips ON trips.trip_id = stop_times.trip_id "
+                    "INNER JOIN stops ON stops.stop_id = stop_times.stop_id "
+                    "WHERE (($1::text IS NOT NULL AND stop_times.stop_id = $1) "
+                    "OR ($2::text IS NOT NULL AND stops.stop_name ILIKE '%' || $2 || '%')) "
+                    "LIMIT 1"
+                ),
+                "params": ["stop_id", "stop_name"],
+                "default_limit": 1,
+                "display_key": "stop_volume_summary",
+                "safety_notes": "Bounded aggregate query for stop-level service volume.",
+            },
+            {
                 "key": "arrivals_for_stop",
                 "description": "Upcoming arrivals/departures at a stop.",
                 "required_inputs": [
@@ -1152,6 +1196,22 @@ def _minimal_fallback_agent_schema() -> dict[str, Any]:
                 },
             },
             {
+                "key": "stop_volume_summary",
+                "title_template": "Estimated service volume for {stop_name} {stop_id}",
+                "columns": [
+                    {"name": "stop_label", "label": "Stop"},
+                    {"name": "scheduled_stop_events", "label": "Scheduled Stop Events"},
+                    {"name": "distinct_trips", "label": "Distinct Trips"},
+                    {"name": "distinct_routes", "label": "Distinct Routes"},
+                ],
+                "row_id_field": None,
+                "formatting": {
+                    "time_fields": [],
+                    "latlon_fields": [],
+                    "color_fields": [],
+                },
+            },
+            {
                 "key": "arrivals_table",
                 "title_template": "Arrivals for stop {stop_id} ({row_count})",
                 "columns": [
@@ -1175,7 +1235,25 @@ def _minimal_fallback_agent_schema() -> dict[str, Any]:
 
 def _choose_template_key(user_text: str, template_map: dict[str, dict[str, Any]]) -> str | None:
     text_lower = user_text.lower()
+    if "stop_service_volume" in template_map:
+        if re.search(r"\bhow many\b.*\bpeople\b", text_lower) and re.search(
+            r"\b(?:at|to|for)\b",
+            text_lower,
+        ):
+            return "stop_service_volume"
+
     ordered_rules = [
+        (
+            "stop_service_volume",
+            (
+                "how many people went to",
+                "how many people at",
+                "how many riders at",
+                "how many riders went to",
+                "how many went to",
+                "traffic at",
+            ),
+        ),
         ("arrivals_for_stop", ("arrival", "arrivals", "departure", "departures", "schedule")),
         ("routes_serving_stop", ("routes serving", "serve stop", "which routes stop")),
         ("stops_on_route", ("stops on route", "stops for route", "route stops")),
@@ -1250,6 +1328,29 @@ def _extract_user_values(user_text: str) -> dict[str, Any]:
         values["stop_name"] = stop_name_match.group(1)
     elif "quoted" in values:
         values.setdefault("stop_name", values["quoted"])
+    elif "stop_id" not in values:
+        location_match = re.search(
+            r"\b(?:to|at|for)\s+([A-Za-z0-9&'./\-\s]{2,}?)(?:[?.!,;:]\s*)?$",
+            user_text,
+            re.I,
+        )
+        if location_match:
+            candidate = location_match.group(1).strip().strip(".,!?;:")
+            candidate_lower = candidate.lower()
+            disallowed = {
+                "this",
+                "that",
+                "there",
+                "here",
+                "stop",
+                "route",
+                "trip",
+                "this stop",
+                "that stop",
+                "the stop",
+            }
+            if candidate and candidate_lower not in disallowed and not candidate_lower.startswith("stop_id"):
+                values["stop_name"] = candidate
 
     lat_match = re.search(r"\blat(?:itude)?\s*[:=]?\s*(-?\d+(?:\.\d+)?)", text_lower)
     lon_match = re.search(r"\b(?:lon|lng|longitude)\s*[:=]?\s*(-?\d+(?:\.\d+)?)", text_lower)
@@ -1312,6 +1413,14 @@ def _resolve_param_value(param_name: str, extracted: dict[str, Any], row_limit: 
             return 1.0
         return radius
     return extracted.get(param_name)
+
+
+def _has_required_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
 
 
 def _apply_sql_safety(sql: str, params: list[Any], row_limit: int, max_limit: int) -> tuple[str, list[Any]]:

@@ -33,6 +33,19 @@ class QueryPlanningTests(unittest.TestCase):
         self.assertAlmostEqual(float(plan["params"][2]), -122.4194, places=4)
         self.assertAlmostEqual(float(plan["params"][3]), 2.0, places=2)
 
+    def test_how_many_people_maps_to_stop_service_volume(self):
+        plan = proposeQueryPlan("How many people went to Smith & 5th?", self.schema)
+        self.assertIsNone(plan["clarifying_question"])
+        self.assertEqual(plan["template_key"], "stop_service_volume")
+        self.assertEqual(plan["params"][0], None)
+        self.assertEqual(plan["params"][1], "Smith & 5th")
+
+    def test_how_many_people_requires_location(self):
+        plan = proposeQueryPlan("How many people were at this stop?", self.schema)
+        self.assertIsNotNone(plan["clarifying_question"])
+        self.assertIn("stop_id or stop_name", plan["clarifying_question"])
+        self.assertIsNone(plan["sql"])
+
 
 if __name__ == "__main__":
     unittest.main()
