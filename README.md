@@ -18,6 +18,8 @@ cp .env.example .env
 Fill `.env` with your real values:
 - `GEMINI_API_KEY`
 - `DATABASE_URL` (Railway Postgres URL)
+- `GEMINI_MODEL` (optional, defaults to `gemini-2.0-flash`)
+- `SCHEMA_EXECUTION_MODE` (optional, `dry_run` or `apply`, default `dry_run`)
 
 ## 2) Run
 

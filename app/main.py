@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -13,6 +14,7 @@ from app.schema_synthesis import (
     proposeSchemaFromOptions,
     proposedSchemaToDict,
 )
+from app.schema_execution import SchemaExecutionError, execute_schema_proposal
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
@@ -39,7 +41,15 @@ class ChatResponse(BaseModel):
     row_count: int = 0
     error: str | None = None
     proposed_schema: dict[str, Any] | None = None
+    schema_execution: dict[str, Any] | None = None
     is_database_question: bool = False
+
+
+def _schema_execution_mode() -> str:
+    mode = os.getenv("SCHEMA_EXECUTION_MODE", "dry_run").strip().lower()
+    if mode not in {"dry_run", "apply"}:
+        return "dry_run"
+    return mode
 
 
 def process_user_message(user_text: str) -> ChatResponse:
@@ -67,9 +77,38 @@ def process_user_message(user_text: str) -> ChatResponse:
     proposal_dict = proposedSchemaToDict(proposed_schema)
     selected = proposal_dict.get("selected_options", [])
     selected_text = ", ".join(selected) if selected else "no options"
+
+    try:
+        execution_result = execute_schema_proposal(
+            proposal_dict,
+            mode=_schema_execution_mode(),
+        )
+    except SchemaExecutionError:
+        execution_result = {
+            "executed": False,
+            "mode": _schema_execution_mode(),
+            "success": False,
+            "statement_count": 0,
+            "statements": [],
+            "error": "Schema execution failed before reaching database execution.",
+        }
+
+    if execution_result.get("success"):
+        assistant_message = (
+            f"Schema proposal ready from allowed options: {selected_text}. "
+            f"Execution mode={execution_result.get('mode')} succeeded."
+        )
+    else:
+        assistant_message = (
+            f"Schema proposal ready from allowed options: {selected_text}. "
+            f"Execution mode={execution_result.get('mode')} failed."
+        )
+
     return ChatResponse(
-        assistant_message=f"Schema proposal ready from allowed options: {selected_text}.",
+        assistant_message=assistant_message,
         proposed_schema=proposal_dict,
+        schema_execution=execution_result,
+        error=execution_result.get("error"),
         is_database_question=True,
     )
 

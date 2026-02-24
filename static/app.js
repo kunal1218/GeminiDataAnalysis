@@ -54,7 +54,29 @@ function appendMessage(role, text, payload = null) {
       meta.appendChild(schemaPre);
     }
 
-    if (payload.error) {
+    if (payload.schema_execution) {
+      const exec = payload.schema_execution;
+      const execSummary = document.createElement("div");
+      const status = exec.success ? "success" : "failed";
+      execSummary.textContent =
+        `Schema execution (${exec.mode || "dry_run"}): ${status}, ` +
+        `${exec.statement_count || 0} statements`;
+      meta.appendChild(execSummary);
+
+      if (Array.isArray(exec.statements) && exec.statements.length > 0) {
+        const sqlPre = document.createElement("pre");
+        sqlPre.textContent = exec.statements.join(";\n") + ";";
+        meta.appendChild(sqlPre);
+      }
+
+      if (exec.error) {
+        const execError = document.createElement("div");
+        execError.textContent = `Execution error: ${exec.error}`;
+        meta.appendChild(execError);
+      }
+    }
+
+    if (payload.error && !(payload.schema_execution && payload.schema_execution.error)) {
       const error = document.createElement("div");
       error.textContent = `Error: ${payload.error}`;
       meta.appendChild(error);
