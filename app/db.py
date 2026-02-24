@@ -12,10 +12,19 @@ LOGGER = logging.getLogger(__name__)
 
 _RAILWAY_MARKER_ENV_KEYS = ("RAILWAY_ENVIRONMENT", "RAILWAY_PROJECT_ID")
 _POSTGRES_SCHEMES = {"postgresql", "postgres", "postgresql+psycopg2"}
+_PUBLIC_DB_ENV_KEYS = ("DATABASE_PUBLIC_URL", "DATABASE_URL_PUBLIC")
 
 
 def _read_env(name: str) -> str:
     return (os.getenv(name) or "").strip()
+
+
+def _first_set_env(*names: str) -> tuple[str | None, str]:
+    for name in names:
+        value = _read_env(name)
+        if value:
+            return name, value
+    return None, ""
 
 
 def _is_truthy(value: str) -> bool:
@@ -85,7 +94,7 @@ def _validate_database_url(selected_key: str, selected_url: str) -> tuple[str, i
 
 def _select_database_url() -> tuple[str, str]:
     database_url = _read_env("DATABASE_URL")
-    public_url = _read_env("DATABASE_PUBLIC_URL")
+    public_key, public_url = _first_set_env(*_PUBLIC_DB_ENV_KEYS)
     on_railway = _is_running_on_railway()
 
     if on_railway:
@@ -97,20 +106,20 @@ def _select_database_url() -> tuple[str, str]:
             )
     else:
         if public_url:
-            selected_key, selected_url = "DATABASE_PUBLIC_URL", public_url
+            selected_key, selected_url = public_key or "DATABASE_PUBLIC_URL", public_url
         elif database_url:
             selected_key, selected_url = "DATABASE_URL", database_url
         else:
             raise RuntimeError(
                 "Database URL is missing. Outside Railway, set DATABASE_PUBLIC_URL "
-                "(or DATABASE_URL if it is publicly reachable)."
+                "(or DATABASE_URL_PUBLIC) or DATABASE_URL if it is publicly reachable."
             )
 
     selected_host, _ = _validate_database_url(selected_key, selected_url)
     if not on_railway and _is_railway_internal_host(selected_host):
         raise RuntimeError(
             "Detected Railway internal DB host outside Railway runtime. "
-            "Set DATABASE_PUBLIC_URL to Railway's Public connection URL."
+            "Set DATABASE_PUBLIC_URL (or DATABASE_URL_PUBLIC) to Railway's Public connection URL."
         )
     return selected_key, selected_url
 

@@ -19,6 +19,7 @@ cp .env.example .env
 Required env vars:
 - `DATABASE_URL` (Railway internal URL; used when running on Railway)
 - `DATABASE_PUBLIC_URL` (Railway public proxy URL; used outside Railway)
+  (backward-compatible alias: `DATABASE_URL_PUBLIC`)
 - `GEMINI_API_KEY`
 
 Database URL selection:

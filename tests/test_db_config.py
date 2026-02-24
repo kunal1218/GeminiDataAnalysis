@@ -24,6 +24,24 @@ class DatabaseConfigTests(unittest.TestCase):
         self.assertEqual(selected_key, "DATABASE_PUBLIC_URL")
         self.assertIn("metro.proxy.rlwy.net", selected_url)
 
+    def test_accepts_database_url_public_alias(self):
+        with patch.dict(
+            os.environ,
+            {
+                "DATABASE_URL_PUBLIC": (
+                    "postgresql://postgres:public_pw@metro.proxy.rlwy.net:13993/railway"
+                ),
+                "DATABASE_URL": (
+                    "postgresql://postgres:internal_pw@postgres.railway.internal:5432/railway"
+                ),
+            },
+            clear=True,
+        ):
+            selected_key, selected_url = _select_database_url()
+
+        self.assertEqual(selected_key, "DATABASE_URL_PUBLIC")
+        self.assertIn("metro.proxy.rlwy.net", selected_url)
+
     def test_prefers_database_url_on_railway(self):
         with patch.dict(
             os.environ,
