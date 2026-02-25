@@ -753,10 +753,12 @@ def renderDisplayPayload(
 
 def _build_schema_prompt(truth_schema: dict[str, Any]) -> str:
     truth_json = json.dumps(truth_schema, ensure_ascii=True)
+    dataset_context = _build_dataset_context_text()
     return (
         "You are generating a STRICT machine-readable agent schema for GTFS query planning.\n"
         "Use only tables/columns/joins from truthSchema. Do not invent fields.\n"
         "Return JSON only, no markdown, no comments.\n"
+        f"{dataset_context}\n"
         "Contract:\n"
         "{"
         '"dialect":"postgres",'
@@ -808,9 +810,11 @@ def _build_query_feasibility_prompt(user_text: str, truth_schema: dict[str, Any]
         ensure_ascii=True,
     )
     request_json = json.dumps(user_text, ensure_ascii=True)
+    dataset_context = _build_dataset_context_text()
     return (
         "You are a fast feasibility checker for GTFS SQL over Postgres.\n"
         "Decide if the user request can be answered using ONLY the available tables, columns, and joins.\n"
+        f"{dataset_context}\n"
         "Return JSON only with this exact shape:\n"
         "{"
         '"possible": boolean,'
@@ -837,8 +841,10 @@ def _build_query_sql_prompt(user_text: str, truth_schema: dict[str, Any], max_li
         ensure_ascii=True,
     )
     request_json = json.dumps(user_text, ensure_ascii=True)
+    dataset_context = _build_dataset_context_text()
     return (
         "You are a Postgres query generator over GTFS data.\n"
+        f"{dataset_context}\n"
         "Return JSON only with this exact shape:\n"
         "{"
         '"sql": string,'
@@ -855,6 +861,18 @@ def _build_query_sql_prompt(user_text: str, truth_schema: dict[str, Any], max_li
         f"max_limit={max_limit}\n"
         f"userRequest={request_json}\n"
         f"truthSchema={truth_json}"
+    )
+
+
+def _build_dataset_context_text() -> str:
+    return (
+        "Dataset semantics:\n"
+        "- routes = route definitions.\n"
+        "- trips = route-level trip/ticket records; each trip belongs to one route via trips.route_id.\n"
+        "- stop_times = stop events for each trip (arrival/departure/sequence), linking trips to stops.\n"
+        "- stops = stop metadata.\n"
+        "- routes do not connect directly to stops; derive route stops via routes -> trips -> stop_times -> stops.\n"
+        "- There are no fare, payment, or rider-count transaction tables in this dataset."
     )
 
 
