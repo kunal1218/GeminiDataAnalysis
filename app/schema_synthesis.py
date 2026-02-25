@@ -296,7 +296,9 @@ def _call_gemini_schema(prompt: str) -> str:
 
 def _build_schema_prompt(user_request: str, schema_options: dict[str, Any]) -> str:
     options_json = json.dumps(schema_options, separators=(",", ":"), ensure_ascii=True)
+    setup_mandate = _build_setup_mandate_text()
     return (
+        f"{setup_mandate}\n"
         "You are a PostgreSQL schema selector.\n"
         "Select ONLY from schemaOptions.table_options. Never invent new tables, columns, indexes, or foreign keys.\n"
         "If user asks for unsupported entities, choose the closest allowed options and explain tradeoffs in rationale.\n"
@@ -325,7 +327,9 @@ def _build_repair_prompt(
     validation_error: str,
 ) -> str:
     options_json = json.dumps(schema_options, separators=(",", ":"), ensure_ascii=True)
+    setup_mandate = _build_setup_mandate_text()
     return (
+        f"{setup_mandate}\n"
         "Your previous response was invalid.\n"
         f"Validation error: {validation_error}\n"
         "Fix it now.\n"
@@ -335,6 +339,14 @@ def _build_repair_prompt(
         f"schemaOptions={options_json}\n"
         f"userRequest={user_request.strip()}\n"
         f"invalidOutput={invalid_output}"
+    )
+
+
+def _build_setup_mandate_text() -> str:
+    return (
+        "MANDATORY: YOU MUST ADHERE EXACTLY TO OUR SETUP, CONTRACT SHAPE, AND VALIDATION RULES.\n"
+        "MANDATORY: DO NOT INVENT TABLES, COLUMNS, INDEXES, FOREIGN KEYS, OR EXTRA KEYS.\n"
+        "MANDATORY: IF YOU CANNOT COMPLY EXACTLY, RETURN THE SPECIFIED JSON WITH A CLEAR SAFE RATIONALE."
     )
 
 

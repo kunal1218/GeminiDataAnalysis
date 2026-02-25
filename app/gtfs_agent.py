@@ -753,8 +753,10 @@ def renderDisplayPayload(
 
 def _build_schema_prompt(truth_schema: dict[str, Any]) -> str:
     truth_json = json.dumps(truth_schema, ensure_ascii=True)
+    setup_mandate = _build_setup_mandate_text()
     dataset_context = _build_dataset_context_text()
     return (
+        f"{setup_mandate}\n"
         "You are generating a STRICT machine-readable agent schema for GTFS query planning.\n"
         "Use only tables/columns/joins from truthSchema. Do not invent fields.\n"
         "Return JSON only, no markdown, no comments.\n"
@@ -790,10 +792,14 @@ def _build_repair_prompt(
     truth_json = json.dumps(truth_schema, ensure_ascii=True)
     previous_json = json.dumps(previous_schema, ensure_ascii=True)
     error_json = json.dumps(validation_errors, ensure_ascii=True)
+    setup_mandate = _build_setup_mandate_text()
+    dataset_context = _build_dataset_context_text()
     return (
+        f"{setup_mandate}\n"
         "Repair the previous agent schema JSON.\n"
         "Return JSON only.\n"
         "Do not invent new tables/columns.\n"
+        f"{dataset_context}\n"
         f"truthSchema={truth_json}\n"
         f"validationErrors={error_json}\n"
         f"previousSchema={previous_json}"
@@ -810,8 +816,10 @@ def _build_query_feasibility_prompt(user_text: str, truth_schema: dict[str, Any]
         ensure_ascii=True,
     )
     request_json = json.dumps(user_text, ensure_ascii=True)
+    setup_mandate = _build_setup_mandate_text()
     dataset_context = _build_dataset_context_text()
     return (
+        f"{setup_mandate}\n"
         "You are a fast feasibility checker for GTFS SQL over Postgres.\n"
         "Decide if the user request can be answered using ONLY the available tables, columns, and joins.\n"
         f"{dataset_context}\n"
@@ -841,8 +849,10 @@ def _build_query_sql_prompt(user_text: str, truth_schema: dict[str, Any], max_li
         ensure_ascii=True,
     )
     request_json = json.dumps(user_text, ensure_ascii=True)
+    setup_mandate = _build_setup_mandate_text()
     dataset_context = _build_dataset_context_text()
     return (
+        f"{setup_mandate}\n"
         "You are a Postgres query generator over GTFS data.\n"
         f"{dataset_context}\n"
         "Return JSON only with this exact shape:\n"
@@ -861,6 +871,14 @@ def _build_query_sql_prompt(user_text: str, truth_schema: dict[str, Any], max_li
         f"max_limit={max_limit}\n"
         f"userRequest={request_json}\n"
         f"truthSchema={truth_json}"
+    )
+
+
+def _build_setup_mandate_text() -> str:
+    return (
+        "MANDATORY: YOU MUST ADHERE EXACTLY TO OUR SETUP, CONTRACT SHAPE, AND SAFETY RULES.\n"
+        "MANDATORY: DO NOT INVENT TABLES, COLUMNS, JOINS, OR EXTRA KEYS.\n"
+        "MANDATORY: IF YOU CANNOT COMPLY EXACTLY, RETURN THE SPECIFIED JSON WITH A SAFE FAILURE REASON."
     )
 
 
